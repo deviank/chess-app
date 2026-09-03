@@ -1,0 +1,16 @@
+{
+  "name": "Chess App",
+  "install": "sudo apt-get update && sudo apt-get install -y --no-install-recommends php-cli",
+  "terminals": [
+    {
+      "name": "php-server",
+      "command": "php -S 0.0.0.0:8000 -t ."
+    }
+  ],
+  "ports": [
+    {
+      "name": "app",
+      "port": 8000
+    }
+  ]
+}
