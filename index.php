@@ -23,6 +23,9 @@
     --primary-dark: #3730a3;
     --danger: #dc2626;
     --success: #15803d;
+    --legal: #2563eb;
+    --recommend: #f59e0b;
+    --recommend-dark: #b45309;
     --border: #dce3f0;
     --shadow: 0 10px 28px rgba(31, 41, 55, 0.1);
     --radius: 18px;
@@ -300,6 +303,86 @@ button {
     border-radius: 999px;
     background: rgba(20, 184, 166, 0.72);
     content: "";
+}
+
+.advisor-square.is-legal::after {
+    position: absolute;
+    width: 32%;
+    height: 32%;
+    border-radius: 999px;
+    background: rgba(37, 99, 235, 0.72);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.7);
+    content: "";
+}
+
+.advisor-square.is-rec-from {
+    outline: 3px dashed var(--recommend);
+    outline-offset: -3px;
+}
+
+.advisor-square.is-rec-to {
+    outline: 4px solid var(--recommend);
+    outline-offset: -4px;
+    box-shadow: inset 0 0 0 999px rgba(245, 158, 11, 0.28);
+}
+
+.advisor-square.is-rec-to::after {
+    position: absolute;
+    width: 34%;
+    height: 34%;
+    border-radius: 999px;
+    background: var(--recommend);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
+    content: "";
+}
+
+.advisor-controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 14px;
+}
+
+.advisor-controls label {
+    display: grid;
+    gap: 6px;
+    font-size: 0.9rem;
+    font-weight: 800;
+    color: var(--muted);
+}
+
+.advisor-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin: 12px 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--muted);
+}
+
+.advisor-legend li {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.legend-dot {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+}
+
+.legend-dot.legend-legal {
+    background: rgba(37, 99, 235, 0.85);
+}
+
+.legend-dot.legend-recommend {
+    background: var(--recommend);
+    box-shadow: 0 0 0 2px rgba(180, 83, 9, 0.5);
 }
 
 .chess-piece {
@@ -807,21 +890,34 @@ button {
         </section>
 
         <section class="panel" id="panel-advisor" data-panel="advisor" role="tabpanel" aria-labelledby="tab-advisor" hidden>
-            <p class="lead">Move the pieces to match your game, then tap Analyze. You do not need a position code.</p>
+            <p class="lead">Play a real game against someone, and let the app coach your moves. Keep the board matching your game: when your competitor moves, make their move here too. Then set the turn to Me to get advice.</p>
             <div class="advisor-grid">
                 <div class="card advisor-panel advisor-board-card">
                     <h2>Your board</h2>
                     <p class="quiz-copy">Drag a piece to a new square, or tap a piece and then tap where it should go.</p>
                     <div class="advisor-board" data-advisor-board aria-label="Chess position board"></div>
-                    <label for="side-input">
-                        Whose turn is it?
-                        <select id="side-input" data-side-input>
-                            <option value="w">White to move</option>
-                            <option value="b">Black to move</option>
-                        </select>
-                    </label>
+                    <div class="advisor-controls">
+                        <label for="my-color-input">
+                            I play as
+                            <select id="my-color-input" data-my-color>
+                                <option value="w">White (bottom)</option>
+                                <option value="b">Black (top)</option>
+                            </select>
+                        </label>
+                        <label for="side-input">
+                            Whose turn is it?
+                            <select id="side-input" data-side-input>
+                                <option value="competitor">Competitor</option>
+                                <option value="me">Me</option>
+                            </select>
+                        </label>
+                    </div>
+                    <ul class="advisor-legend" aria-hidden="true">
+                        <li><span class="legend-dot legend-legal"></span>Moves you can make</li>
+                        <li><span class="legend-dot legend-recommend"></span>Recommended move</li>
+                    </ul>
                     <div class="advisor-actions">
-                        <button class="button" type="button" data-analyze-position>Analyze</button>
+                        <button class="button" type="button" data-analyze-position>Advise my move</button>
                         <button class="secondary-button" type="button" data-reset-position>Reset</button>
                     </div>
                     <p class="feedback" data-advisor-feedback></p>
@@ -1056,6 +1152,7 @@ button {
     const scoreElement = document.querySelector('[data-score]');
     const fenInput = document.querySelector('[data-fen-input]');
     const sideInput = document.querySelector('[data-side-input]');
+    const myColorInput = document.querySelector('[data-my-color]');
     const analyzeButton = document.querySelector('[data-analyze-position]');
     const resetPositionButton = document.querySelector('[data-reset-position]');
     const advisorBoard = document.querySelector('[data-advisor-board]');
@@ -1075,6 +1172,7 @@ button {
     let skipBoardClick = false;
     let advisorPosition = null;
     let advisorSelectedSquare = null;
+    let advisorLegalSquares = [];
     let advisorDrag = null;
     let skipAdvisorClick = false;
     const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -1492,6 +1590,43 @@ button {
         return piece && pieceColor(piece) !== side;
     }
 
+    function myColor() {
+        return myColorInput && myColorInput.value === 'b' ? 'b' : 'w';
+    }
+
+    function otherColor(color) {
+        return color === 'w' ? 'b' : 'w';
+    }
+
+    function currentSideToMove() {
+        return sideInput.value === 'me' ? myColor() : otherColor(myColor());
+    }
+
+    function isMyTurn() {
+        return sideInput.value === 'me';
+    }
+
+    function colorName(color) {
+        return color === 'w' ? 'White' : 'Black';
+    }
+
+    function bestMoveForSide(side) {
+        if (!advisorPosition) {
+            return null;
+        }
+
+        const position = {
+            board: { ...advisorPosition.board },
+            side,
+        };
+
+        const moves = generateAdvisorMoves(position, side)
+            .map((move) => ({ ...move, score: scoreAdvisorMove(move) }))
+            .sort((a, b) => b.score - a.score);
+
+        return moves.length ? moves[0] : null;
+    }
+
     function renderAdvisorBoard(position, move) {
         advisorBoard.innerHTML = '';
         ranks.forEach((rank) => {
@@ -1520,12 +1655,16 @@ button {
                     square.classList.add('is-selected');
                 }
 
+                if (advisorLegalSquares.includes(squareName)) {
+                    square.classList.add('is-legal');
+                }
+
                 if (move && squareName === move.from) {
-                    square.classList.add('is-from');
+                    square.classList.add('is-rec-from');
                 }
 
                 if (move && squareName === move.to) {
-                    square.classList.add('is-to');
+                    square.classList.add('is-rec-to');
                 }
 
                 advisorBoard.appendChild(square);
@@ -1570,7 +1709,7 @@ button {
             return;
         }
 
-        advisorPosition.side = sideInput.value || 'w';
+        advisorPosition.side = currentSideToMove();
         fenInput.value = positionToFen(advisorPosition);
     }
 
@@ -1578,6 +1717,79 @@ button {
         advisorBoard.querySelectorAll('[data-square]').forEach((square) => {
             square.classList.toggle('is-selected', square.dataset.square === advisorSelectedSquare);
         });
+    }
+
+    function clearAdvice() {
+        advisorLegalSquares = [];
+        highlightedAdvisorMove = null;
+    }
+
+    function updateMeAdvice() {
+        if (!advisorPosition) {
+            return;
+        }
+
+        const side = myColor();
+        advisorLegalSquares = [];
+
+        if (advisorSelectedSquare) {
+            const selected = advisorPosition.board[advisorSelectedSquare];
+            if (selected && pieceColor(selected) === side) {
+                advisorLegalSquares = advisorMovesForPiece(advisorPosition, advisorSelectedSquare, side)
+                    .map((move) => move.to);
+            }
+        }
+
+        const best = bestMoveForSide(side);
+        highlightedAdvisorMove = best;
+        renderAdvisorBoard(advisorPosition, best);
+
+        if (best) {
+            moveResult.textContent = `Recommended: ${advisorPieceLabels[pieceKind(best.piece)]} ${best.from} to ${best.to}`;
+            moveExplanation.textContent = explainAdvisorMove(best);
+            advisorFeedback.className = 'feedback success';
+            advisorFeedback.textContent = advisorSelectedSquare
+                ? 'Blue dots are moves for the selected piece. Gold is my recommended move.'
+                : 'Gold shows my recommended move. Tap one of your pieces to see its moves.';
+        } else {
+            moveResult.textContent = 'No recommended move found for you.';
+            moveExplanation.textContent = 'Check that your pieces are placed correctly for your colour.';
+            advisorFeedback.className = 'feedback';
+            advisorFeedback.textContent = '';
+        }
+    }
+
+    function refreshAdvisorTurn() {
+        if (!advisorPosition) {
+            return;
+        }
+
+        syncFenFromPosition();
+        advisorSelectedSquare = null;
+
+        if (isMyTurn()) {
+            updateMeAdvice();
+            return;
+        }
+
+        clearAdvice();
+        renderAdvisorBoard(advisorPosition, null);
+        moveResult.textContent = 'Your competitor is to move.';
+        moveExplanation.textContent = 'When your competitor moves on the real board, make the same move here. Then set the turn to Me for advice.';
+        advisorFeedback.className = 'feedback';
+        advisorFeedback.textContent = '';
+    }
+
+    function selectAdvisorSquare(squareName) {
+        advisorSelectedSquare = squareName;
+
+        if (isMyTurn()) {
+            updateMeAdvice();
+            return;
+        }
+
+        advisorLegalSquares = [];
+        renderAdvisorBoard(advisorPosition, highlightedAdvisorMove);
     }
 
     function moveAdvisorPiece(from, to) {
@@ -1592,14 +1804,20 @@ button {
 
         delete advisorPosition.board[from];
         advisorPosition.board[to] = piece;
-        advisorSelectedSquare = to;
-        highlightedAdvisorMove = null;
+        advisorSelectedSquare = null;
+        clearAdvice();
         syncFenFromPosition();
         renderAdvisorBoard(advisorPosition, null);
         advisorFeedback.className = 'feedback';
-        advisorFeedback.textContent = `Moved to ${to}. Tap Analyze when the board matches your game.`;
-        moveResult.textContent = 'Set up the board, then analyze it to get a suggested move.';
-        moveExplanation.textContent = 'White pieces start on the bottom. Black pieces start on the top.';
+        advisorFeedback.textContent = `Moved ${from} to ${to}. Set the turn to match whose move is next.`;
+
+        if (isMyTurn()) {
+            moveResult.textContent = 'Move recorded. Set the turn to Competitor for their move.';
+            moveExplanation.textContent = 'Keep the board matching your real game.';
+        } else {
+            moveResult.textContent = 'Competitor move recorded. Set the turn to Me for advice.';
+            moveExplanation.textContent = 'Keep the board matching your real game.';
+        }
     }
 
     function advisorSquareFromPoint(x, y) {
@@ -1647,8 +1865,6 @@ button {
         }
 
         event.preventDefault();
-        advisorSelectedSquare = square.dataset.square;
-        refreshAdvisorSelection();
 
         advisorDrag = {
             from: square.dataset.square,
@@ -1713,14 +1929,28 @@ button {
         }
 
         const squareName = square.dataset.square;
-        if (square.dataset.piece) {
-            advisorSelectedSquare = advisorSelectedSquare === squareName ? null : squareName;
-            refreshAdvisorSelection();
+        const targetPiece = advisorPosition ? advisorPosition.board[squareName] : null;
+
+        if (advisorSelectedSquare && squareName !== advisorSelectedSquare) {
+            const selectedPiece = advisorPosition.board[advisorSelectedSquare];
+            if (targetPiece && selectedPiece && pieceColor(targetPiece) === pieceColor(selectedPiece)) {
+                selectAdvisorSquare(squareName);
+                return;
+            }
+
+            moveAdvisorPiece(advisorSelectedSquare, squareName);
             return;
         }
 
-        if (advisorSelectedSquare) {
-            moveAdvisorPiece(advisorSelectedSquare, squareName);
+        if (targetPiece) {
+            if (advisorSelectedSquare === squareName) {
+                advisorSelectedSquare = null;
+                advisorLegalSquares = [];
+                renderAdvisorBoard(advisorPosition, highlightedAdvisorMove);
+                return;
+            }
+
+            selectAdvisorSquare(squareName);
         }
     });
 
@@ -1891,35 +2121,16 @@ button {
                 advisorPosition = parseFen(fenInput.value || START_FEN);
             }
 
-            const position = {
-                board: { ...advisorPosition.board },
-                side: sideInput.value || advisorPosition.side || 'w',
-            };
-            advisorPosition.side = position.side;
-            syncFenFromPosition();
+            sideInput.value = 'me';
+            advisorSelectedSquare = null;
+            refreshAdvisorTurn();
 
-            const moves = generateAdvisorMoves(position, position.side)
-                .map((move) => ({ ...move, score: scoreAdvisorMove(move) }))
-                .sort((a, b) => b.score - a.score);
-
-            if (!moves.length) {
-                highlightedAdvisorMove = null;
-                renderAdvisorBoard(position, null);
-                moveResult.textContent = 'No basic legal-looking moves were found.';
-                moveExplanation.textContent = 'Check that the selected side has pieces left to move.';
+            if (!highlightedAdvisorMove) {
                 advisorFeedback.className = 'feedback danger';
-                advisorFeedback.textContent = 'No move suggestion available.';
+                advisorFeedback.textContent = 'No move suggestion available for your pieces.';
                 return;
             }
 
-            const best = moves[0];
-            highlightedAdvisorMove = best;
-            advisorSelectedSquare = null;
-            renderAdvisorBoard(position, best);
-            moveResult.textContent = `${position.side === 'w' ? 'White' : 'Black'}: ${best.label}`;
-            moveExplanation.textContent = explainAdvisorMove(best);
-            advisorFeedback.className = 'feedback success';
-            advisorFeedback.textContent = 'Suggested move is highlighted on the board.';
             moveResult.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         } catch (error) {
             highlightedAdvisorMove = null;
@@ -1932,15 +2143,13 @@ button {
 
     function resetManualPosition() {
         fenInput.value = START_FEN;
-        sideInput.value = 'w';
-        highlightedAdvisorMove = null;
-        advisorSelectedSquare = null;
         advisorPosition = parseFen(START_FEN);
-        renderAdvisorBoard(advisorPosition, null);
+        advisorSelectedSquare = null;
+        clearAdvice();
+        sideInput.value = myColor() === 'w' ? 'me' : 'competitor';
+        refreshAdvisorTurn();
         advisorFeedback.className = 'feedback';
         advisorFeedback.textContent = '';
-        moveResult.textContent = 'Set up the board, then analyze it to get a suggested move.';
-        moveExplanation.textContent = 'White pieces start on the bottom. Black pieces start on the top.';
     }
 
     function startQuiz() {
@@ -2058,16 +2267,16 @@ button {
     newQuizButton.addEventListener('click', startQuiz);
     analyzeButton.addEventListener('click', analyzeManualPosition);
     resetPositionButton.addEventListener('click', resetManualPosition);
-    sideInput.addEventListener('change', syncFenFromPosition);
+    sideInput.addEventListener('change', refreshAdvisorTurn);
+    myColorInput.addEventListener('change', refreshAdvisorTurn);
     fenInput.addEventListener('change', () => {
         try {
             const position = parseFen(fenInput.value);
-            position.side = position.side || sideInput.value || 'w';
-            sideInput.value = position.side;
-            advisorSelectedSquare = null;
-            highlightedAdvisorMove = null;
             advisorPosition = position;
-            renderAdvisorBoard(position, null);
+            advisorSelectedSquare = null;
+            clearAdvice();
+            sideInput.value = position.side === myColor() ? 'me' : 'competitor';
+            refreshAdvisorTurn();
             advisorFeedback.className = 'feedback success';
             advisorFeedback.textContent = 'Position code loaded onto the board.';
         } catch (error) {
