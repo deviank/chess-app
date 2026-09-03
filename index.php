@@ -1220,6 +1220,7 @@ button {
                 square.type = 'button';
                 square.className = `chess-square ${squareColor}`;
                 square.dataset.square = squareName;
+                square.draggable = false;
                 square.setAttribute('aria-label', squareName);
 
                 const pieceEntry = pieceAt(squareName);
@@ -1229,6 +1230,7 @@ button {
                     pieceElement.className = 'chess-piece';
                     pieceElement.textContent = piece.symbol;
                     pieceElement.title = piece.label;
+                    pieceElement.draggable = false;
                     square.appendChild(pieceElement);
                     square.dataset.piece = pieceKey;
                 }
@@ -1357,6 +1359,7 @@ button {
             return;
         }
 
+        event.preventDefault();
         applySelection(square.dataset.piece);
         refreshBoardHighlights();
 
@@ -1404,6 +1407,7 @@ button {
 
     board.addEventListener('pointerup', endDrag);
     board.addEventListener('pointercancel', endDrag);
+    board.addEventListener('dragstart', (event) => event.preventDefault());
 
     board.addEventListener('click', (event) => {
         if (skipBoardClick) {
@@ -1499,12 +1503,14 @@ button {
                 square.type = 'button';
                 square.className = `advisor-square ${color}`;
                 square.dataset.square = squareName;
+                square.draggable = false;
                 square.setAttribute('aria-label', squareName);
 
                 if (piece) {
                     const pieceElement = document.createElement('span');
                     pieceElement.className = 'advisor-piece';
                     pieceElement.textContent = advisorSymbols[piece];
+                    pieceElement.draggable = false;
                     square.appendChild(pieceElement);
                     square.dataset.piece = piece;
                     square.classList.add(pieceColor(piece) === 'w' ? 'is-white' : 'is-black');
@@ -1640,6 +1646,7 @@ button {
             return;
         }
 
+        event.preventDefault();
         advisorSelectedSquare = square.dataset.square;
         refreshAdvisorSelection();
 
@@ -1692,6 +1699,7 @@ button {
 
     advisorBoard.addEventListener('pointerup', endAdvisorDrag);
     advisorBoard.addEventListener('pointercancel', endAdvisorDrag);
+    advisorBoard.addEventListener('dragstart', (event) => event.preventDefault());
 
     advisorBoard.addEventListener('click', (event) => {
         if (skipAdvisorClick) {
