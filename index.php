@@ -890,7 +890,7 @@ button {
         </section>
 
         <section class="panel" id="panel-advisor" data-panel="advisor" role="tabpanel" aria-labelledby="tab-advisor" hidden>
-            <p class="lead">Play a real game against someone, and let the app coach your moves. Keep the board matching your game: when your competitor moves, make their move here too. Then set the turn to Me to get advice.</p>
+            <p class="lead">Let the app coach your moves. Set the turn to Me for advice on your move. Choose Computer to have the app play the opponent for you, or Competitor when you are playing a real person (like your son) and want to enter their move yourself.</p>
             <div class="advisor-grid">
                 <div class="card advisor-panel advisor-board-card">
                     <h2>Your board</h2>
@@ -907,8 +907,9 @@ button {
                         <label for="side-input">
                             Whose turn is it?
                             <select id="side-input" data-side-input>
-                                <option value="competitor">Competitor</option>
                                 <option value="me">Me</option>
+                                <option value="computer">Computer</option>
+                                <option value="competitor">Competitor</option>
                             </select>
                         </label>
                     </div>
@@ -1780,6 +1781,49 @@ button {
         advisorFeedback.textContent = '';
     }
 
+    function playComputerMove() {
+        if (!advisorPosition) {
+            return;
+        }
+
+        const computerSide = otherColor(myColor());
+        const best = bestMoveForSide(computerSide);
+
+        if (!best) {
+            advisorSelectedSquare = null;
+            clearAdvice();
+            renderAdvisorBoard(advisorPosition, null);
+            moveResult.textContent = 'The computer has no move to make.';
+            moveExplanation.textContent = 'Check that the computer still has pieces to play.';
+            advisorFeedback.className = 'feedback danger';
+            advisorFeedback.textContent = 'No computer move available.';
+            return;
+        }
+
+        delete advisorPosition.board[best.from];
+        advisorPosition.board[best.to] = best.piece;
+        advisorSelectedSquare = null;
+        clearAdvice();
+
+        sideInput.value = 'me';
+        updateMeAdvice();
+
+        const computerMoveText = `Computer played ${advisorPieceLabels[pieceKind(best.piece)]} ${best.from} to ${best.to}.`;
+        advisorFeedback.className = 'feedback success';
+        advisorFeedback.textContent = highlightedAdvisorMove
+            ? `${computerMoveText} Now it is your turn — gold shows my suggestion.`
+            : `${computerMoveText} Now it is your turn.`;
+    }
+
+    function handleTurnChange() {
+        if (sideInput.value === 'computer') {
+            playComputerMove();
+            return;
+        }
+
+        refreshAdvisorTurn();
+    }
+
     function selectAdvisorSquare(squareName) {
         advisorSelectedSquare = squareName;
 
@@ -1812,11 +1856,11 @@ button {
         advisorFeedback.textContent = `Moved ${from} to ${to}. Set the turn to match whose move is next.`;
 
         if (isMyTurn()) {
-            moveResult.textContent = 'Move recorded. Set the turn to Competitor for their move.';
-            moveExplanation.textContent = 'Keep the board matching your real game.';
+            moveResult.textContent = 'Your move is recorded. Set the turn to Computer to let the app reply, or Competitor to enter your opponent\u2019s move.';
+            moveExplanation.textContent = 'Keep the board matching your game.';
         } else {
-            moveResult.textContent = 'Competitor move recorded. Set the turn to Me for advice.';
-            moveExplanation.textContent = 'Keep the board matching your real game.';
+            moveResult.textContent = 'Opponent move recorded. Set the turn to Me for advice.';
+            moveExplanation.textContent = 'Keep the board matching your game.';
         }
     }
 
@@ -2267,7 +2311,7 @@ button {
     newQuizButton.addEventListener('click', startQuiz);
     analyzeButton.addEventListener('click', analyzeManualPosition);
     resetPositionButton.addEventListener('click', resetManualPosition);
-    sideInput.addEventListener('change', refreshAdvisorTurn);
+    sideInput.addEventListener('change', handleTurnChange);
     myColorInput.addEventListener('change', refreshAdvisorTurn);
     fenInput.addEventListener('change', () => {
         try {
