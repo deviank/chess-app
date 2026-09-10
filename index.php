@@ -413,6 +413,15 @@ button {
     grid-template-columns: 1fr 1fr;
 }
 
+.advisor-actions .button {
+    grid-column: 1 / -1;
+}
+
+.secondary-button[disabled] {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 .button,
 .secondary-button,
 .piece-button,
@@ -919,6 +928,7 @@ button {
                     </ul>
                     <div class="advisor-actions">
                         <button class="button" type="button" data-analyze-position>Advise my move</button>
+                        <button class="secondary-button" type="button" data-undo-move disabled>Undo move</button>
                         <button class="secondary-button" type="button" data-reset-position>Reset</button>
                     </div>
                     <p class="feedback" data-advisor-feedback></p>
@@ -1155,6 +1165,7 @@ button {
     const sideInput = document.querySelector('[data-side-input]');
     const myColorInput = document.querySelector('[data-my-color]');
     const analyzeButton = document.querySelector('[data-analyze-position]');
+    const undoMoveButton = document.querySelector('[data-undo-move]');
     const resetPositionButton = document.querySelector('[data-reset-position]');
     const advisorBoard = document.querySelector('[data-advisor-board]');
     const advisorFeedback = document.querySelector('[data-advisor-feedback]');
@@ -1174,6 +1185,7 @@ button {
     let advisorPosition = null;
     let advisorSelectedSquare = null;
     let advisorLegalSquares = [];
+    let advisorHistory = [];
     let advisorDrag = null;
     let skipAdvisorClick = false;
     const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -1725,6 +1737,50 @@ button {
         highlightedAdvisorMove = null;
     }
 
+    function updateUndoButton() {
+        if (!undoMoveButton) {
+            return;
+        }
+
+        undoMoveButton.disabled = advisorHistory.length === 0;
+    }
+
+    function snapshotAdvisor() {
+        if (!advisorPosition) {
+            return;
+        }
+
+        advisorHistory.push({
+            board: { ...advisorPosition.board },
+            turn: sideInput.value === 'computer' ? 'me' : sideInput.value,
+            color: myColorInput.value,
+        });
+        updateUndoButton();
+    }
+
+    function clearAdvisorHistory() {
+        advisorHistory = [];
+        updateUndoButton();
+    }
+
+    function undoAdvisorMove() {
+        if (!advisorHistory.length) {
+            return;
+        }
+
+        const snapshot = advisorHistory.pop();
+        advisorPosition = { board: { ...snapshot.board }, side: 'w' };
+        myColorInput.value = snapshot.color;
+        sideInput.value = snapshot.turn;
+        advisorSelectedSquare = null;
+        clearAdvice();
+        updateUndoButton();
+
+        refreshAdvisorTurn();
+        advisorFeedback.className = 'feedback';
+        advisorFeedback.textContent = 'Last move reverted.';
+    }
+
     function updateMeAdvice() {
         if (!advisorPosition) {
             return;
@@ -1800,6 +1856,7 @@ button {
             return;
         }
 
+        snapshotAdvisor();
         delete advisorPosition.board[best.from];
         advisorPosition.board[best.to] = best.piece;
         advisorSelectedSquare = null;
@@ -1846,6 +1903,7 @@ button {
             return;
         }
 
+        snapshotAdvisor();
         delete advisorPosition.board[from];
         advisorPosition.board[to] = piece;
         advisorSelectedSquare = null;
@@ -2190,6 +2248,7 @@ button {
         advisorPosition = parseFen(START_FEN);
         advisorSelectedSquare = null;
         clearAdvice();
+        clearAdvisorHistory();
         sideInput.value = myColor() === 'w' ? 'me' : 'competitor';
         refreshAdvisorTurn();
         advisorFeedback.className = 'feedback';
@@ -2310,6 +2369,7 @@ button {
     resetBoardButton.addEventListener('click', resetBoard);
     newQuizButton.addEventListener('click', startQuiz);
     analyzeButton.addEventListener('click', analyzeManualPosition);
+    undoMoveButton.addEventListener('click', undoAdvisorMove);
     resetPositionButton.addEventListener('click', resetManualPosition);
     sideInput.addEventListener('change', handleTurnChange);
     myColorInput.addEventListener('change', refreshAdvisorTurn);
@@ -2319,6 +2379,7 @@ button {
             advisorPosition = position;
             advisorSelectedSquare = null;
             clearAdvice();
+            clearAdvisorHistory();
             sideInput.value = position.side === myColor() ? 'me' : 'competitor';
             refreshAdvisorTurn();
             advisorFeedback.className = 'feedback success';
