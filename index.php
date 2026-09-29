@@ -1623,21 +1623,129 @@ button {
         return color === 'w' ? 'White' : 'Black';
     }
 
+    const ADVISOR_KING_VALUE = 20000;
+    const ADVISOR_SEARCH_DEPTH = 3;
+
+    function advisorPieceWorth(piece) {
+        if (!piece) {
+            return 0;
+        }
+
+        const kind = pieceKind(piece);
+        return kind === 'k' ? ADVISOR_KING_VALUE : advisorPieceValues[kind];
+    }
+
+    function advisorKingPresent(board, side) {
+        return Object.keys(board).some((square) => {
+            const piece = board[square];
+            return pieceKind(piece) === 'k' && pieceColor(piece) === side;
+        });
+    }
+
+    function advisorMaterial(board, side) {
+        return Object.keys(board).reduce((sum, square) => {
+            const piece = board[square];
+            const sign = pieceColor(piece) === side ? 1 : -1;
+            return sum + (sign * advisorPieceWorth(piece));
+        }, 0);
+    }
+
+    function advisorPositional(board, side) {
+        return Object.keys(board).reduce((sum, square) => {
+            const piece = board[square];
+            const sign = pieceColor(piece) === side ? 1 : -1;
+            let value = centerBonus(square);
+            const kind = pieceKind(piece);
+            if (kind === 'n' || kind === 'b') {
+                const backRank = pieceColor(piece) === 'w' ? '1' : '8';
+                if (square[1] === backRank) {
+                    value -= 12;
+                }
+            }
+            return sum + (sign * value);
+        }, 0);
+    }
+
+    function advisorEvaluate(board, side) {
+        return advisorMaterial(board, side) + advisorPositional(board, side);
+    }
+
+    function applyMoveToBoard(board, move) {
+        const next = { ...board };
+        delete next[move.from];
+        next[move.to] = move.piece;
+        return next;
+    }
+
+    function orderAdvisorMoves(moves) {
+        return moves.slice().sort((a, b) => advisorPieceWorth(b.captured) - advisorPieceWorth(a.captured));
+    }
+
+    function advisorNegamax(board, side, depth, alpha, beta) {
+        if (!advisorKingPresent(board, side) || !advisorKingPresent(board, otherColor(side))) {
+            return advisorEvaluate(board, side);
+        }
+
+        if (depth === 0) {
+            return advisorEvaluate(board, side);
+        }
+
+        const moves = orderAdvisorMoves(generateAdvisorMoves({ board }, side));
+        if (!moves.length) {
+            return advisorEvaluate(board, side);
+        }
+
+        let best = -Infinity;
+        for (let index = 0; index < moves.length; index += 1) {
+            const child = applyMoveToBoard(board, moves[index]);
+            const value = -advisorNegamax(child, otherColor(side), depth - 1, -beta, -alpha);
+            if (value > best) {
+                best = value;
+            }
+            if (best > alpha) {
+                alpha = best;
+            }
+            if (alpha >= beta) {
+                break;
+            }
+        }
+
+        return best;
+    }
+
+    function searchBestMove(board, side, depth) {
+        const moves = orderAdvisorMoves(generateAdvisorMoves({ board }, side));
+        if (!moves.length) {
+            return null;
+        }
+
+        let bestMove = null;
+        let bestValue = -Infinity;
+        let alpha = -Infinity;
+        const beta = Infinity;
+
+        for (let index = 0; index < moves.length; index += 1) {
+            const move = moves[index];
+            const child = applyMoveToBoard(board, move);
+            const value = -advisorNegamax(child, otherColor(side), depth - 1, -beta, -alpha);
+            if (value > bestValue) {
+                bestValue = value;
+                bestMove = move;
+            }
+            if (bestValue > alpha) {
+                alpha = bestValue;
+            }
+        }
+
+        return bestMove;
+    }
+
     function bestMoveForSide(side) {
         if (!advisorPosition) {
             return null;
         }
 
-        const position = {
-            board: { ...advisorPosition.board },
-            side,
-        };
-
-        const moves = generateAdvisorMoves(position, side)
-            .map((move) => ({ ...move, score: scoreAdvisorMove(move) }))
-            .sort((a, b) => b.score - a.score);
-
-        return moves.length ? moves[0] : null;
+        return searchBestMove(advisorPosition.board, side, ADVISOR_SEARCH_DEPTH);
     }
 
     function renderAdvisorBoard(position, move) {
@@ -2211,10 +2319,10 @@ button {
         }
 
         if (!reasons.length) {
-            reasons.push('it improves your position without giving material away in this simple check');
+            reasons.push('it improves your position while keeping your pieces safe');
         }
 
-        return `Move the ${pieceName} from ${move.from} to ${move.to}: ${reasons.join(', ')}.`;
+        return `Move the ${pieceName} from ${move.from} to ${move.to}: ${reasons.join(', ')}. This move was checked against the opponent's best reply so it should not hang a piece.`;
     }
 
     function analyzeManualPosition() {
