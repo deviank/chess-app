@@ -214,6 +214,7 @@ button {
     cursor: pointer;
     touch-action: none;
     user-select: none;
+    -webkit-touch-callout: none;
 }
 
 .advisor-piece {
@@ -903,7 +904,7 @@ button {
             <div class="advisor-grid">
                 <div class="card advisor-panel advisor-board-card">
                     <h2>Your board</h2>
-                    <p class="quiz-copy">Drag a piece to a new square, or tap a piece and then tap where it should go.</p>
+                    <p class="quiz-copy">Drag a piece to a new square, or tap a piece and then tap where it should go. Press and hold the board to see every move you can make.</p>
                     <div class="advisor-board" data-advisor-board aria-label="Chess position board"></div>
                     <div class="advisor-controls">
                         <label for="my-color-input">
@@ -1188,6 +1189,8 @@ button {
     let advisorHistory = [];
     let advisorDrag = null;
     let skipAdvisorClick = false;
+    let advisorPressTimer = null;
+    let advisorPressStart = null;
     const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
     const advisorPieceValues = {
         p: 100,
@@ -1924,6 +1927,66 @@ button {
         }
     }
 
+    function allLegalDestinationsForSide(side) {
+        if (!advisorPosition) {
+            return [];
+        }
+
+        const destinations = new Set();
+        generateAdvisorMoves({ board: advisorPosition.board }, side).forEach((move) => {
+            destinations.add(move.to);
+        });
+        return Array.from(destinations);
+    }
+
+    function showAllMyMoves() {
+        if (!advisorPosition) {
+            return;
+        }
+
+        const side = myColor();
+        advisorSelectedSquare = null;
+        advisorLegalSquares = allLegalDestinationsForSide(side);
+        highlightedAdvisorMove = bestMoveForSide(side);
+        renderAdvisorBoard(advisorPosition, highlightedAdvisorMove);
+
+        if (advisorLegalSquares.length) {
+            advisorFeedback.className = 'feedback success';
+            advisorFeedback.textContent = 'Showing every move you can make (blue). Gold is my recommended move.';
+            if (highlightedAdvisorMove) {
+                moveResult.textContent = `Recommended: ${advisorPieceLabels[pieceKind(highlightedAdvisorMove.piece)]} ${highlightedAdvisorMove.from} to ${highlightedAdvisorMove.to}`;
+                moveExplanation.textContent = explainAdvisorMove(highlightedAdvisorMove);
+            }
+        } else {
+            advisorFeedback.className = 'feedback';
+            advisorFeedback.textContent = 'You have no moves to make with your pieces.';
+        }
+    }
+
+    function cancelAdvisorLongPress() {
+        if (advisorPressTimer) {
+            window.clearTimeout(advisorPressTimer);
+            advisorPressTimer = null;
+        }
+        advisorPressStart = null;
+    }
+
+    function startAdvisorLongPress(event) {
+        cancelAdvisorLongPress();
+        advisorPressStart = {
+            x: event.clientX,
+            y: event.clientY,
+            pointerId: event.pointerId,
+        };
+        advisorPressTimer = window.setTimeout(() => {
+            advisorPressTimer = null;
+            advisorPressStart = null;
+            advisorDrag = null;
+            skipAdvisorClick = true;
+            showAllMyMoves();
+        }, 500);
+    }
+
     function refreshAdvisorTurn() {
         if (!advisorPosition) {
             return;
@@ -2040,6 +2103,8 @@ button {
     }
 
     function endAdvisorDrag(event) {
+        cancelAdvisorLongPress();
+
         if (!advisorDrag || event.pointerId !== advisorDrag.pointerId) {
             return;
         }
@@ -2070,7 +2135,14 @@ button {
 
     advisorBoard.addEventListener('pointerdown', (event) => {
         const square = event.target.closest('[data-square]');
-        if (!square || !advisorBoard.contains(square) || !square.dataset.piece) {
+        if (!square || !advisorBoard.contains(square)) {
+            return;
+        }
+
+        skipAdvisorClick = false;
+        startAdvisorLongPress(event);
+
+        if (!square.dataset.piece) {
             return;
         }
 
@@ -2095,6 +2167,14 @@ button {
     });
 
     advisorBoard.addEventListener('pointermove', (event) => {
+        if (advisorPressStart && event.pointerId === advisorPressStart.pointerId) {
+            const pressDx = event.clientX - advisorPressStart.x;
+            const pressDy = event.clientY - advisorPressStart.y;
+            if (((pressDx * pressDx) + (pressDy * pressDy)) >= 144) {
+                cancelAdvisorLongPress();
+            }
+        }
+
         if (!advisorDrag || event.pointerId !== advisorDrag.pointerId) {
             return;
         }
@@ -2107,6 +2187,7 @@ button {
 
         if (!advisorDrag.moved) {
             advisorDrag.moved = true;
+            cancelAdvisorLongPress();
             advisorDrag.ghost = document.createElement('div');
             advisorDrag.ghost.className = 'piece-ghost';
             advisorDrag.ghost.textContent = advisorDrag.symbol;
@@ -2126,6 +2207,7 @@ button {
     advisorBoard.addEventListener('pointerup', endAdvisorDrag);
     advisorBoard.addEventListener('pointercancel', endAdvisorDrag);
     advisorBoard.addEventListener('dragstart', (event) => event.preventDefault());
+    advisorBoard.addEventListener('contextmenu', (event) => event.preventDefault());
 
     advisorBoard.addEventListener('click', (event) => {
         if (skipAdvisorClick) {
