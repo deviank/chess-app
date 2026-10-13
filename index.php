@@ -752,6 +752,10 @@ button {
     gap: 14px;
 }
 
+.play-view[hidden] {
+    display: none;
+}
+
 .play-actions {
     display: grid;
     gap: 10px;
@@ -3354,6 +3358,11 @@ button {
         if (id.length < 5) {
             playMessage.className = 'feedback danger';
             playMessage.textContent = 'Enter the 5-character game code.';
+            return;
+        }
+        if (playGameId === id && playToken) {
+            playShowView(playState && playState.status === 'waiting' ? 'waiting' : 'game');
+            playPoll();
             return;
         }
         playMessage.className = 'feedback';
