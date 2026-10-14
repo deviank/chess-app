@@ -1,4 +1,323 @@
-﻿<!doctype html>
+﻿<?php
+/*
+ * Lightweight two-player backend for the chess app.
+ * Single-file: when the page is requested with ?api=... it responds with JSON
+ * and exits before any HTML is emitted. Otherwise the normal app renders.
+ * State is stored as flat JSON files (no database required), coordinated with
+ * file locks. Clients poll for the opponent's moves.
+ */
+if (isset($_REQUEST['api'])) {
+    cp2_handle_api(trim((string) $_REQUEST['api']));
+    exit;
+}
+
+function cp2_data_dir() {
+    $candidates = array(__DIR__ . '/data', sys_get_temp_dir() . '/chess-app-data');
+    foreach ($candidates as $base) {
+        $games = $base . '/games';
+        if (is_dir($games) || @mkdir($games, 0775, true) || is_dir($games)) {
+            $ht = $base . '/.htaccess';
+            if (!file_exists($ht)) {
+                @file_put_contents($ht, "Require all denied\nDeny from all\n");
+            }
+            if (is_writable($games)) {
+                return $games;
+            }
+        }
+    }
+    return null;
+}
+
+function cp2_out($data, $code = 200) {
+    http_response_code($code);
+    header('Content-Type: application/json');
+    header('Cache-Control: no-store');
+    echo json_encode($data);
+    exit;
+}
+
+function cp2_new_id() {
+    $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    $id = '';
+    for ($i = 0; $i < 5; $i++) {
+        $id .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+    }
+    return $id;
+}
+
+function cp2_token() {
+    return bin2hex(random_bytes(10));
+}
+
+function cp2_start_placement() {
+    return 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR';
+}
+
+function cp2_fen_to_grid($placement) {
+    $grid = array();
+    $rows = explode('/', $placement);
+    if (count($rows) !== 8) {
+        return null;
+    }
+    foreach ($rows as $row) {
+        $cells = array();
+        $len = strlen($row);
+        for ($i = 0; $i < $len; $i++) {
+            $ch = $row[$i];
+            if (ctype_digit($ch)) {
+                for ($k = 0; $k < (int) $ch; $k++) {
+                    $cells[] = '';
+                }
+            } else {
+                $cells[] = $ch;
+            }
+        }
+        if (count($cells) !== 8) {
+            return null;
+        }
+        $grid[] = $cells;
+    }
+    return $grid;
+}
+
+function cp2_grid_to_fen($grid) {
+    $rows = array();
+    foreach ($grid as $cells) {
+        $row = '';
+        $empty = 0;
+        foreach ($cells as $cell) {
+            if ($cell === '') {
+                $empty++;
+            } else {
+                if ($empty > 0) {
+                    $row .= $empty;
+                    $empty = 0;
+                }
+                $row .= $cell;
+            }
+        }
+        if ($empty > 0) {
+            $row .= $empty;
+        }
+        $rows[] = $row;
+    }
+    return implode('/', $rows);
+}
+
+function cp2_square_to_rc($sq) {
+    if (!is_string($sq) || strlen($sq) !== 2) {
+        return null;
+    }
+    $file = ord($sq[0]) - 97;
+    $rank = (int) $sq[1];
+    if ($file < 0 || $file > 7 || $rank < 1 || $rank > 8) {
+        return null;
+    }
+    return array(8 - $rank, $file);
+}
+
+function cp2_piece_color($piece) {
+    if ($piece === '') {
+        return null;
+    }
+    return ctype_upper($piece) ? 'w' : 'b';
+}
+
+function cp2_public_state($game, $token = null) {
+    $you = null;
+    if ($token !== null && $token !== '') {
+        if (isset($game['players']['w']) && hash_equals((string) $game['players']['w'], $token)) {
+            $you = 'w';
+        } elseif (isset($game['players']['b']) && hash_equals((string) $game['players']['b'], $token)) {
+            $you = 'b';
+        }
+    }
+    return array(
+        'ok' => true,
+        'gameId' => $game['id'],
+        'status' => $game['status'],
+        'placement' => $game['placement'],
+        'turn' => $game['turn'],
+        'players' => array(
+            'w' => !empty($game['players']['w']),
+            'b' => !empty($game['players']['b']),
+        ),
+        'lastMove' => $game['lastMove'],
+        'winner' => $game['winner'],
+        'you' => $you,
+        'updatedAt' => $game['updatedAt'],
+    );
+}
+
+function cp2_handle_api($action) {
+    $dir = cp2_data_dir();
+    if ($dir === null) {
+        cp2_out(array('ok' => false, 'error' => 'Server storage is not writable.'), 500);
+    }
+
+    if ($action === 'create') {
+        for ($attempt = 0; $attempt < 8; $attempt++) {
+            $id = cp2_new_id();
+            $path = $dir . '/' . $id . '.json';
+            $fp = @fopen($path, 'x');
+            if ($fp !== false) {
+                $token = cp2_token();
+                $game = array(
+                    'id' => $id,
+                    'placement' => cp2_start_placement(),
+                    'turn' => 'w',
+                    'players' => array('w' => $token, 'b' => null),
+                    'status' => 'waiting',
+                    'lastMove' => null,
+                    'winner' => null,
+                    'createdAt' => time(),
+                    'updatedAt' => time(),
+                );
+                fwrite($fp, json_encode($game));
+                fclose($fp);
+                $state = cp2_public_state($game, $token);
+                $state['token'] = $token;
+                $state['color'] = 'w';
+                cp2_out($state);
+            }
+        }
+        cp2_out(array('ok' => false, 'error' => 'Could not create a game, please retry.'), 500);
+    }
+
+    $id = isset($_REQUEST['gameId']) ? strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string) $_REQUEST['gameId'])) : '';
+    if ($id === '') {
+        cp2_out(array('ok' => false, 'error' => 'Missing game code.'), 400);
+    }
+    $path = $dir . '/' . $id . '.json';
+    if (!file_exists($path)) {
+        cp2_out(array('ok' => false, 'error' => 'Game not found. Check the code.'), 404);
+    }
+
+    $fp = fopen($path, 'r+');
+    if ($fp === false) {
+        cp2_out(array('ok' => false, 'error' => 'Could not open the game.'), 500);
+    }
+    flock($fp, LOCK_EX);
+    $raw = stream_get_contents($fp);
+    $game = json_decode($raw, true);
+    if (!is_array($game)) {
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        cp2_out(array('ok' => false, 'error' => 'Game data is corrupted.'), 500);
+    }
+
+    $save = function ($game) use ($fp) {
+        $game['updatedAt'] = time();
+        ftruncate($fp, 0);
+        rewind($fp);
+        fwrite($fp, json_encode($game));
+        fflush($fp);
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        return $game;
+    };
+
+    if ($action === 'state') {
+        $token = isset($_REQUEST['token']) ? (string) $_REQUEST['token'] : null;
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        cp2_out(cp2_public_state($game, $token));
+    }
+
+    if ($action === 'join') {
+        $token = isset($_REQUEST['token']) ? (string) $_REQUEST['token'] : '';
+        if ($token !== '' && hash_equals((string) $game['players']['w'], $token)) {
+            $game = $save($game);
+            $state = cp2_public_state($game, $token);
+            $state['token'] = $token;
+            $state['color'] = 'w';
+            cp2_out($state);
+        }
+        if ($token !== '' && !empty($game['players']['b']) && hash_equals((string) $game['players']['b'], $token)) {
+            $game = $save($game);
+            $state = cp2_public_state($game, $token);
+            $state['token'] = $token;
+            $state['color'] = 'b';
+            cp2_out($state);
+        }
+        if (!empty($game['players']['b'])) {
+            flock($fp, LOCK_UN);
+            fclose($fp);
+            cp2_out(array('ok' => false, 'error' => 'This game already has two players.'), 409);
+        }
+        $token = cp2_token();
+        $game['players']['b'] = $token;
+        $game['status'] = 'active';
+        $game = $save($game);
+        $state = cp2_public_state($game, $token);
+        $state['token'] = $token;
+        $state['color'] = 'b';
+        cp2_out($state);
+    }
+
+    if ($action === 'move') {
+        $token = isset($_REQUEST['token']) ? (string) $_REQUEST['token'] : '';
+        $from = isset($_REQUEST['from']) ? (string) $_REQUEST['from'] : '';
+        $to = isset($_REQUEST['to']) ? (string) $_REQUEST['to'] : '';
+
+        $fail = function ($msg, $code) use ($fp) {
+            flock($fp, LOCK_UN);
+            fclose($fp);
+            cp2_out(array('ok' => false, 'error' => $msg), $code);
+        };
+
+        if ($game['status'] !== 'active') {
+            $fail('The game is not active.', 409);
+        }
+        $turn = $game['turn'];
+        if ($token === '' || empty($game['players'][$turn]) || !hash_equals((string) $game['players'][$turn], $token)) {
+            $fail('It is not your turn.', 403);
+        }
+        $fromRc = cp2_square_to_rc($from);
+        $toRc = cp2_square_to_rc($to);
+        if ($fromRc === null || $toRc === null || $from === $to) {
+            $fail('Invalid move squares.', 400);
+        }
+        $grid = cp2_fen_to_grid($game['placement']);
+        if ($grid === null) {
+            $fail('Board data is corrupted.', 500);
+        }
+        $piece = $grid[$fromRc[0]][$fromRc[1]];
+        if ($piece === '' || cp2_piece_color($piece) !== $turn) {
+            $fail('That is not your piece.', 400);
+        }
+        $target = $grid[$toRc[0]][$toRc[1]];
+        if ($target !== '' && cp2_piece_color($target) === $turn) {
+            $fail('You cannot capture your own piece.', 400);
+        }
+
+        $captured = $target;
+        $grid[$fromRc[0]][$fromRc[1]] = '';
+        if ($piece === 'P' && $toRc[0] === 0) {
+            $piece = 'Q';
+        } elseif ($piece === 'p' && $toRc[0] === 7) {
+            $piece = 'q';
+        }
+        $grid[$toRc[0]][$toRc[1]] = $piece;
+
+        $game['placement'] = cp2_grid_to_fen($grid);
+        $game['lastMove'] = array('from' => $from, 'to' => $to);
+        if (strtolower($captured) === 'k') {
+            $game['status'] = 'over';
+            $game['winner'] = $turn;
+        } else {
+            $game['turn'] = ($turn === 'w') ? 'b' : 'w';
+        }
+        $game = $save($game);
+        cp2_out(cp2_public_state($game, $token));
+    }
+
+    flock($fp, LOCK_UN);
+    fclose($fp);
+    cp2_out(array('ok' => false, 'error' => 'Unknown action.'), 400);
+}
+?>
+<!doctype html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
@@ -423,6 +742,143 @@ button {
     cursor: not-allowed;
 }
 
+.play-card {
+    display: grid;
+    gap: 4px;
+}
+
+.play-view {
+    display: grid;
+    gap: 14px;
+}
+
+.play-view[hidden] {
+    display: none;
+}
+
+.play-actions {
+    display: grid;
+    gap: 10px;
+    margin-top: 4px;
+}
+
+.play-actions-row {
+    grid-template-columns: 1fr 1fr;
+}
+
+.play-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--muted);
+    font-size: 0.82rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.play-divider::before,
+.play-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+}
+
+.play-join-label,
+.play-share-wrap {
+    display: grid;
+    gap: 6px;
+    font-size: 0.9rem;
+    font-weight: 800;
+    color: var(--muted);
+}
+
+.play-join-label input,
+#play-share-link {
+    width: 100%;
+    padding: 12px 14px;
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--text);
+    background: var(--surface);
+}
+
+#play-join-code {
+    text-transform: uppercase;
+    letter-spacing: 0.3em;
+    text-align: center;
+    font-size: 1.3rem;
+}
+
+.play-code-box {
+    display: grid;
+    gap: 4px;
+    justify-items: center;
+    padding: 16px;
+    border-radius: 14px;
+    background: var(--surface-strong);
+}
+
+.play-code-label {
+    font-size: 0.8rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.play-code {
+    font-size: 2.1rem;
+    letter-spacing: 0.35em;
+    font-weight: 900;
+    color: var(--primary-dark);
+    padding-left: 0.35em;
+}
+
+.play-statusbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.play-badge {
+    font-weight: 800;
+    color: var(--muted);
+}
+
+.play-turn {
+    font-weight: 900;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: var(--surface-strong);
+    color: var(--primary-dark);
+}
+
+.play-turn.is-your-turn {
+    background: rgba(21, 128, 61, 0.16);
+    color: var(--success);
+}
+
+.play-turn.is-over {
+    background: rgba(245, 158, 11, 0.2);
+    color: var(--recommend-dark);
+}
+
+.advisor-square.is-last {
+    outline: 3px solid var(--recommend);
+    outline-offset: -3px;
+}
+
+.play-board.is-waiting {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
 .button,
 .secondary-button,
 .piece-button,
@@ -840,6 +1296,15 @@ button {
             </svg>
             Advisor
         </button>
+        <button class="tab-button" type="button" role="tab" id="tab-play" data-tab="play" aria-controls="panel-play" aria-selected="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <circle cx="9" cy="7" r="3"></circle>
+                <circle cx="17" cy="7" r="3"></circle>
+                <path d="M3 20c0-3 2.5-5 6-5s6 2 6 5"></path>
+                <path d="M14.5 15.2c2.6.4 4.5 2.3 4.5 4.8"></path>
+            </svg>
+            Play
+        </button>
     </nav>
 
     <main class="app-main">
@@ -954,6 +1419,57 @@ button {
                         White pieces start on the bottom. Black pieces start on the top.
                     </p>
                 </aside>
+            </div>
+        </section>
+
+        <section class="panel" id="panel-play" data-panel="play" role="tabpanel" aria-labelledby="tab-play" hidden>
+            <p class="lead">Play a live game against someone on their own device. Create a game, share the code or link, and your opponent opens the same site to join and challenge you.</p>
+
+            <div class="card play-card">
+                <div class="play-view" data-play-lobby>
+                    <h2>Start a game</h2>
+                    <p class="quiz-copy">Create a new game and send the code to your opponent, or enter a code they shared with you.</p>
+                    <div class="play-actions">
+                        <button class="button" type="button" data-play-create>Create a game</button>
+                    </div>
+                    <div class="play-divider"><span>or join a game</span></div>
+                    <label class="play-join-label" for="play-join-code">Game code
+                        <input id="play-join-code" data-play-code type="text" inputmode="latin" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="5" placeholder="ABCDE">
+                    </label>
+                    <div class="play-actions">
+                        <button class="secondary-button" type="button" data-play-join>Join game</button>
+                    </div>
+                    <p class="feedback" data-play-message></p>
+                </div>
+
+                <div class="play-view" data-play-waiting hidden>
+                    <h2>Waiting for your opponent</h2>
+                    <p class="quiz-copy">Share this with your opponent. When they open it and join, the game starts automatically.</p>
+                    <div class="play-code-box">
+                        <span class="play-code-label">Game code</span>
+                        <strong class="play-code" data-play-code-display>-----</strong>
+                    </div>
+                    <label class="play-join-label" for="play-share-link">Share link
+                        <input id="play-share-link" data-play-share-link type="text" readonly>
+                    </label>
+                    <div class="play-actions play-actions-row">
+                        <button class="button" type="button" data-play-copy>Copy link</button>
+                        <button class="secondary-button" type="button" data-play-cancel>Cancel</button>
+                    </div>
+                    <p class="feedback" data-play-wait-message>Waiting for your opponent to join…</p>
+                </div>
+
+                <div class="play-view" data-play-game hidden>
+                    <div class="play-statusbar">
+                        <span class="play-badge" data-play-you>You: -</span>
+                        <span class="play-turn" data-play-turn>-</span>
+                    </div>
+                    <div class="advisor-board play-board" data-play-board aria-label="Live game board"></div>
+                    <p class="feedback" data-play-game-message></p>
+                    <div class="play-actions play-actions-row">
+                        <button class="secondary-button" type="button" data-play-leave>Leave game</button>
+                    </div>
+                </div>
             </div>
         </section>
     </main>
@@ -2579,10 +3095,464 @@ button {
             advisorFeedback.textContent = error.message;
         }
     });
+    const playBoard = document.querySelector('[data-play-board]');
+    const playLobby = document.querySelector('[data-play-lobby]');
+    const playWaiting = document.querySelector('[data-play-waiting]');
+    const playGameView = document.querySelector('[data-play-game]');
+    const playCreateBtn = document.querySelector('[data-play-create]');
+    const playJoinBtn = document.querySelector('[data-play-join]');
+    const playCodeInput = document.querySelector('[data-play-code]');
+    const playMessage = document.querySelector('[data-play-message]');
+    const playCodeDisplay = document.querySelector('[data-play-code-display]');
+    const playShareLinkInput = document.querySelector('[data-play-share-link]');
+    const playCopyBtn = document.querySelector('[data-play-copy]');
+    const playCancelBtn = document.querySelector('[data-play-cancel]');
+    const playYouBadge = document.querySelector('[data-play-you]');
+    const playTurnBadge = document.querySelector('[data-play-turn]');
+    const playGameMessage = document.querySelector('[data-play-game-message]');
+    const playLeaveBtn = document.querySelector('[data-play-leave]');
+
+    const PLAY_STORE_KEY = 'chessPlayGame';
+    let playState = null;
+    let playGameId = null;
+    let playToken = null;
+    let playColor = null;
+    let playSelected = null;
+    let playLegal = [];
+    let playPollTimer = null;
+    let playRenderKey = null;
+
+    function playApi(action, params) {
+        const query = new URLSearchParams(Object.assign({ api: action }, params || {}));
+        return fetch(`${location.pathname}?${query.toString()}`, { headers: { Accept: 'application/json' } })
+            .then((res) => res.json().catch(() => ({ ok: false, error: 'Unexpected server response.' })));
+    }
+
+    function playShareUrl(id) {
+        return `${location.origin}${location.pathname}?game=${id}`;
+    }
+
+    function playShowView(name) {
+        playLobby.hidden = name !== 'lobby';
+        playWaiting.hidden = name !== 'waiting';
+        playGameView.hidden = name !== 'game';
+    }
+
+    function playPersist() {
+        if (playGameId && playToken) {
+            try {
+                localStorage.setItem(PLAY_STORE_KEY, JSON.stringify({ gameId: playGameId, token: playToken, color: playColor }));
+            } catch (error) {
+                /* ignore storage errors */
+            }
+        }
+    }
+
+    function playClearStore() {
+        try {
+            localStorage.removeItem(PLAY_STORE_KEY);
+        } catch (error) {
+            /* ignore storage errors */
+        }
+    }
+
+    function playStopPolling() {
+        if (playPollTimer) {
+            window.clearInterval(playPollTimer);
+            playPollTimer = null;
+        }
+    }
+
+    function playStartPolling() {
+        playStopPolling();
+        playPollTimer = window.setInterval(playPoll, 1500);
+    }
+
+    function playPoll() {
+        if (!playGameId) {
+            return;
+        }
+        playApi('state', { gameId: playGameId, token: playToken || '' })
+            .then((data) => {
+                if (data && data.ok) {
+                    playApplyState(data);
+                }
+            })
+            .catch(() => { /* transient network error; keep polling */ });
+    }
+
+    function playColorName(color) {
+        return color === 'w' ? 'White' : color === 'b' ? 'Black' : '-';
+    }
+
+    function playRenderBoard() {
+        playBoard.innerHTML = '';
+        if (!playState) {
+            return;
+        }
+
+        const board = parseFen(playState.placement).board;
+        const flip = playColor === 'b';
+        const rankOrder = flip ? [1, 2, 3, 4, 5, 6, 7, 8] : [8, 7, 6, 5, 4, 3, 2, 1];
+        const fileOrder = flip ? ['h', 'g', 'f', 'e', 'd', 'c', 'b', 'a'] : files;
+        const lastMove = playState.lastMove;
+
+        rankOrder.forEach((rank) => {
+            fileOrder.forEach((file) => {
+                const squareName = `${file}${rank}`;
+                const trueFileIndex = files.indexOf(file);
+                const color = (trueFileIndex + rank) % 2 === 0 ? 'dark' : 'light';
+                const piece = board[squareName];
+                const square = document.createElement('button');
+                square.type = 'button';
+                square.className = `advisor-square ${color}`;
+                square.dataset.square = squareName;
+                square.draggable = false;
+                square.setAttribute('aria-label', squareName);
+
+                if (piece) {
+                    const pieceElement = document.createElement('span');
+                    pieceElement.className = 'advisor-piece';
+                    pieceElement.textContent = advisorSymbols[piece];
+                    pieceElement.draggable = false;
+                    square.appendChild(pieceElement);
+                    square.dataset.piece = piece;
+                    square.classList.add(pieceColor(piece) === 'w' ? 'is-white' : 'is-black');
+                }
+
+                if (playSelected === squareName) {
+                    square.classList.add('is-selected');
+                }
+                if (playLegal.includes(squareName)) {
+                    square.classList.add('is-legal');
+                }
+                if (lastMove && (lastMove.from === squareName || lastMove.to === squareName)) {
+                    square.classList.add('is-last');
+                }
+
+                playBoard.appendChild(square);
+            });
+        });
+
+        playBoard.classList.toggle('is-waiting', playState.status !== 'active');
+    }
+
+    function playUpdateStatus() {
+        if (!playState) {
+            return;
+        }
+        playYouBadge.textContent = `You: ${playColorName(playColor)}`;
+        playTurnBadge.className = 'play-turn';
+
+        if (playState.status === 'over') {
+            playTurnBadge.classList.add('is-over');
+            const won = playState.winner === playColor;
+            playTurnBadge.textContent = won ? 'You won!' : 'You lost';
+            playGameMessage.className = `feedback ${won ? 'success' : 'danger'}`;
+            playGameMessage.textContent = won
+                ? 'You captured your opponent\u2019s king. Tap Leave game to start a new one.'
+                : 'Your king was captured. Tap Leave game to start a new one.';
+            return;
+        }
+
+        const myTurn = playState.turn === playColor;
+        if (myTurn) {
+            playTurnBadge.classList.add('is-your-turn');
+            playTurnBadge.textContent = 'Your move';
+        } else {
+            playTurnBadge.textContent = 'Opponent to move';
+        }
+
+        const lastMove = playState.lastMove;
+        playGameMessage.className = 'feedback';
+        if (lastMove) {
+            playGameMessage.textContent = `Last move: ${lastMove.from} to ${lastMove.to}.` + (myTurn ? ' Your turn \u2014 tap a piece.' : ' Waiting for your opponent\u2026');
+        } else {
+            playGameMessage.textContent = myTurn ? 'You move first. Tap one of your pieces.' : 'Waiting for the first move\u2026';
+        }
+    }
+
+    function playApplyState(data) {
+        playState = data;
+        if (data.you) {
+            playColor = data.you;
+        }
+
+        if (data.status === 'waiting') {
+            playCodeDisplay.textContent = data.gameId;
+            playShareLinkInput.value = playShareUrl(data.gameId);
+            playShowView('waiting');
+        } else {
+            playShowView('game');
+        }
+
+        const key = [data.status, data.turn, data.placement, data.lastMove ? data.lastMove.from + data.lastMove.to : ''].join('|');
+        if (key !== playRenderKey) {
+            playRenderKey = key;
+            playSelected = null;
+            playLegal = [];
+            playRenderBoard();
+        }
+        playUpdateStatus();
+
+        if (data.status === 'over') {
+            playStopPolling();
+        }
+    }
+
+    function playSelectSquare(name, board) {
+        playSelected = name;
+        playLegal = advisorMovesForPiece({ board }, name, playColor).map((move) => move.to);
+        playRenderBoard();
+    }
+
+    function playSendMove(from, to) {
+        playGameMessage.className = 'feedback';
+        playGameMessage.textContent = 'Sending move\u2026';
+        playApi('move', { gameId: playGameId, token: playToken, from, to })
+            .then((data) => {
+                if (!data || !data.ok) {
+                    playGameMessage.className = 'feedback danger';
+                    playGameMessage.textContent = (data && data.error) || 'Move was rejected.';
+                    playPoll();
+                    return;
+                }
+                playSelected = null;
+                playLegal = [];
+                playApplyState(data);
+            })
+            .catch(() => {
+                playGameMessage.className = 'feedback danger';
+                playGameMessage.textContent = 'Network error. Retrying\u2026';
+                playPoll();
+            });
+    }
+
+    function playCreateGame() {
+        playMessage.className = 'feedback';
+        playMessage.textContent = 'Creating\u2026';
+        playApi('create')
+            .then((data) => {
+                if (!data || !data.ok) {
+                    playMessage.className = 'feedback danger';
+                    playMessage.textContent = (data && data.error) || 'Could not create a game.';
+                    return;
+                }
+                playGameId = data.gameId;
+                playToken = data.token;
+                playColor = data.color || 'w';
+                playRenderKey = null;
+                playPersist();
+                playMessage.textContent = '';
+                playApplyState(data);
+                playStartPolling();
+            })
+            .catch(() => {
+                playMessage.className = 'feedback danger';
+                playMessage.textContent = 'Network error. Please try again.';
+            });
+    }
+
+    function playJoinGame(rawCode) {
+        const id = (rawCode || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        if (id.length < 5) {
+            playMessage.className = 'feedback danger';
+            playMessage.textContent = 'Enter the 5-character game code.';
+            return;
+        }
+        if (playGameId === id && playToken) {
+            playShowView(playState && playState.status === 'waiting' ? 'waiting' : 'game');
+            playPoll();
+            return;
+        }
+        playMessage.className = 'feedback';
+        playMessage.textContent = 'Joining\u2026';
+        playApi('join', { gameId: id })
+            .then((data) => {
+                if (!data || !data.ok) {
+                    playMessage.className = 'feedback danger';
+                    playMessage.textContent = (data && data.error) || 'Could not join that game.';
+                    return;
+                }
+                playGameId = data.gameId;
+                playToken = data.token;
+                playColor = data.color || 'b';
+                playRenderKey = null;
+                playPersist();
+                playMessage.textContent = '';
+                playApplyState(data);
+                playStartPolling();
+            })
+            .catch(() => {
+                playMessage.className = 'feedback danger';
+                playMessage.textContent = 'Network error. Please try again.';
+            });
+    }
+
+    function playLeave() {
+        playStopPolling();
+        playClearStore();
+        playState = null;
+        playGameId = null;
+        playToken = null;
+        playColor = null;
+        playSelected = null;
+        playLegal = [];
+        playRenderKey = null;
+        if (playCodeInput) {
+            playCodeInput.value = '';
+        }
+        playMessage.className = 'feedback';
+        playMessage.textContent = '';
+        playShowView('lobby');
+    }
+
+    function playCopyLink() {
+        const text = playShareLinkInput.value;
+        const confirmCopied = () => {
+            playCopyBtn.textContent = 'Copied!';
+            window.setTimeout(() => { playCopyBtn.textContent = 'Copy link'; }, 1500);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(confirmCopied).catch(() => {
+                playShareLinkInput.focus();
+                playShareLinkInput.select();
+            });
+        } else {
+            playShareLinkInput.focus();
+            playShareLinkInput.select();
+            try {
+                document.execCommand('copy');
+                confirmCopied();
+            } catch (error) {
+                /* clipboard unavailable; link is selected for manual copy */
+            }
+        }
+    }
+
+    function playResume() {
+        let stored = null;
+        try {
+            stored = JSON.parse(localStorage.getItem(PLAY_STORE_KEY) || 'null');
+        } catch (error) {
+            stored = null;
+        }
+        const params = new URLSearchParams(location.search);
+        const deepLink = (params.get('game') || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+        const resumeStored = () => {
+            playGameId = stored.gameId;
+            playToken = stored.token;
+            playColor = stored.color || null;
+            playApi('state', { gameId: stored.gameId, token: stored.token })
+                .then((data) => {
+                    if (!data || !data.ok || data.status === 'over') {
+                        playClearStore();
+                        playGameId = null;
+                        playToken = null;
+                        playColor = null;
+                        if (deepLink) {
+                            showPanel('play');
+                            playCodeInput.value = deepLink;
+                            playJoinGame(deepLink);
+                        }
+                        return;
+                    }
+                    playRenderKey = null;
+                    playApplyState(data);
+                    playStartPolling();
+                    showPanel('play');
+                })
+                .catch(() => { /* offline; stay on current view */ });
+        };
+
+        if (deepLink) {
+            if (stored && stored.gameId === deepLink) {
+                resumeStored();
+            } else {
+                showPanel('play');
+                playCodeInput.value = deepLink;
+                playJoinGame(deepLink);
+            }
+            return;
+        }
+
+        if (stored && stored.gameId && stored.token) {
+            resumeStored();
+        }
+    }
+
+    function initPlay() {
+        if (!playBoard) {
+            return;
+        }
+        playCreateBtn.addEventListener('click', playCreateGame);
+        playJoinBtn.addEventListener('click', () => playJoinGame(playCodeInput.value));
+        playCancelBtn.addEventListener('click', playLeave);
+        playLeaveBtn.addEventListener('click', playLeave);
+        playCopyBtn.addEventListener('click', playCopyLink);
+
+        playCodeInput.addEventListener('input', () => {
+            playCodeInput.value = playCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+        });
+        playCodeInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                playJoinGame(playCodeInput.value);
+            }
+        });
+
+        playBoard.addEventListener('click', (event) => {
+            if (!playState || playState.status !== 'active') {
+                return;
+            }
+            if (playState.turn !== playColor) {
+                playGameMessage.className = 'feedback';
+                playGameMessage.textContent = 'It is your opponent\u2019s move. Please wait.';
+                return;
+            }
+            const square = event.target.closest('[data-square]');
+            if (!square) {
+                return;
+            }
+            const name = square.dataset.square;
+            const board = parseFen(playState.placement).board;
+            const piece = board[name];
+
+            if (playSelected && name !== playSelected) {
+                if (piece && pieceColor(piece) === playColor) {
+                    playSelectSquare(name, board);
+                    return;
+                }
+                if (playLegal.includes(name)) {
+                    playSendMove(playSelected, name);
+                    return;
+                }
+                playSelected = null;
+                playLegal = [];
+                playRenderBoard();
+                return;
+            }
+
+            if (piece && pieceColor(piece) === playColor) {
+                if (playSelected === name) {
+                    playSelected = null;
+                    playLegal = [];
+                    playRenderBoard();
+                    return;
+                }
+                playSelectSquare(name, board);
+            }
+        });
+
+        playResume();
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
         renderPieceButtons();
         selectPiece('king');
         resetManualPosition();
+        initPlay();
     });
 })();
 
