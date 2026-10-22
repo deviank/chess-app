@@ -978,15 +978,24 @@ button {
 .play-card {
     display: grid;
     gap: 0;
-    width: min(100%, 560px);
+    width: min(100%, 34rem);
     margin-inline: auto;
-    padding: clamp(20px, 5.2vw, 28px);
+    padding: 0;
+    overflow: hidden;
 }
 
 .play-view {
     display: grid;
-    gap: clamp(12px, 3vw, 16px);
+    gap: clamp(14px, 3.2vw, 18px);
     min-width: 0;
+    max-width: 100%;
+    padding-block: clamp(24px, 4.5vw, 40px);
+    padding-inline: clamp(28px, 6.5vw, 48px);
+}
+
+.play-view > * {
+    min-width: 0;
+    max-width: 100%;
 }
 
 .play-view h2,
