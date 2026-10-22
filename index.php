@@ -549,11 +549,19 @@ function cp2_handle_api($action) {
     fclose($fp);
     cp2_out(array('ok' => false, 'error' => 'Unknown action.'), 400);
 }
+
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+$cp2_mtime = filemtime(__FILE__);
+header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $cp2_mtime) . ' GMT');
+header('ETag: "chess-' . $cp2_mtime . '"');
 ?>
 <!doctype html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
+    <meta http-equiv="Cache-Control" content="no-store">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#4f46e5">
     <meta name="mobile-web-app-capable" content="yes">
@@ -582,7 +590,7 @@ function cp2_handle_api($action) {
     --shadow: 0 10px 28px rgba(31, 41, 55, 0.1);
     --radius: 18px;
     --header-h: 56px;
-    --tab-h: 64px;
+    --tab-h: 72px;
     --space: 16px;
     --tap: 48px;
     --safe-top: env(safe-area-inset-top, 0px);
@@ -986,11 +994,10 @@ button {
 
 .play-view {
     display: grid;
-    gap: clamp(14px, 3.2vw, 18px);
+    gap: 16px;
     min-width: 0;
     max-width: 100%;
-    padding-block: clamp(24px, 4.5vw, 40px);
-    padding-inline: clamp(28px, 6.5vw, 48px);
+    padding: 28px 24px 32px;
 }
 
 .play-view > * {
@@ -1436,9 +1443,11 @@ button {
     bottom: 0;
     left: 0;
     z-index: 40;
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    display: flex;
+    flex-flow: row nowrap;
+    align-items: stretch;
     gap: 4px;
+    min-height: var(--tab-h);
     padding: 6px max(8px, var(--safe-right)) calc(6px + var(--safe-bottom)) max(8px, var(--safe-left));
     border-top: 1px solid var(--border);
     background: rgba(255, 255, 255, 0.96);
@@ -1447,6 +1456,7 @@ button {
 
 .tab-button {
     display: flex;
+    flex: 1 1 0;
     min-height: 52px;
     min-width: 0;
     flex-direction: column;
@@ -1458,9 +1468,11 @@ button {
     background: transparent;
     color: var(--muted);
     cursor: pointer;
-    font-size: clamp(0.62rem, 2.7vw, 0.78rem);
+    font-size: 0.68rem;
     font-weight: 800;
-    padding-inline: 2px;
+    line-height: 1.1;
+    padding: 4px 2px;
+    white-space: nowrap;
 }
 
 .tab-button svg {
@@ -1511,6 +1523,10 @@ button {
 
     .app-main {
         padding: 24px max(32px, var(--safe-right)) 48px max(32px, var(--safe-left));
+    }
+
+    .play-view {
+        padding: 40px 48px !important;
     }
 
     .tab-bar {
@@ -1597,7 +1613,7 @@ button {
         </div>
     </header>
 
-    <nav class="tab-bar" role="tablist" aria-label="App sections">
+    <nav class="tab-bar" role="tablist" aria-label="App sections" style="display:flex;flex-flow:row nowrap">
         <button class="tab-button is-active" type="button" role="tab" id="tab-learn" data-tab="learn" aria-controls="panel-learn" aria-selected="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                 <rect x="3" y="3" width="18" height="18" rx="2"></rect>
@@ -1754,7 +1770,7 @@ button {
             <p class="lead">Play a live game against someone on their own device. Create a game, share the code or link, and your opponent opens the same site to join and challenge you.</p>
 
             <div class="card play-card">
-                <div class="play-view" data-play-lobby>
+                <div class="play-view" data-play-lobby style="padding:28px 24px 32px">
                     <h2>Start a game</h2>
                     <p class="quiz-copy">Create a new game and send the code to your opponent, or enter a code they shared with you.</p>
                     <div class="play-actions">
@@ -1770,7 +1786,7 @@ button {
                     <p class="feedback" data-play-message></p>
                 </div>
 
-                <div class="play-view" data-play-waiting hidden>
+                <div class="play-view" data-play-waiting hidden style="padding:28px 24px 32px">
                     <h2>Waiting for your opponent</h2>
                     <p class="quiz-copy">Share this with your opponent. When they open it and join, the game starts automatically.</p>
                     <div class="play-code-box">
@@ -1787,7 +1803,7 @@ button {
                     <p class="feedback" data-play-wait-message>Waiting for your opponent to join…</p>
                 </div>
 
-                <div class="play-view" data-play-game hidden>
+                <div class="play-view" data-play-game hidden style="padding:28px 24px 32px">
                     <div class="play-statusbar">
                         <span class="play-badge" data-play-you>You: -</span>
                         <span class="play-turn" data-play-turn>-</span>
