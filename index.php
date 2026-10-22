@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 /*
  * Lightweight two-player backend for the chess app.
  * Single-file: when the page is requested with ?api=... it responds with JSON
@@ -123,6 +123,230 @@ function cp2_piece_color($piece) {
     return ctype_upper($piece) ? 'w' : 'b';
 }
 
+function cp2_on_board($row, $col) {
+    return $row >= 0 && $row < 8 && $col >= 0 && $col < 8;
+}
+
+function cp2_sign($delta) {
+    if ($delta > 0) {
+        return 1;
+    }
+    if ($delta < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+function cp2_copy_grid($grid) {
+    $next = array();
+    foreach ($grid as $row) {
+        $next[] = $row;
+    }
+    return $next;
+}
+
+function cp2_apply_move($grid, $fromR, $fromC, $toR, $toC) {
+    $next = cp2_copy_grid($grid);
+    $piece = $next[$fromR][$fromC];
+    $next[$fromR][$fromC] = '';
+    if ($piece === 'P' && $toR === 0) {
+        $piece = 'Q';
+    } elseif ($piece === 'p' && $toR === 7) {
+        $piece = 'q';
+    }
+    $next[$toR][$toC] = $piece;
+    return $next;
+}
+
+function cp2_path_clear($grid, $fromR, $fromC, $toR, $toC) {
+    $stepR = cp2_sign($toR - $fromR);
+    $stepC = cp2_sign($toC - $fromC);
+    $row = $fromR + $stepR;
+    $col = $fromC + $stepC;
+    while ($row !== $toR || $col !== $toC) {
+        if ($grid[$row][$col] !== '') {
+            return false;
+        }
+        $row += $stepR;
+        $col += $stepC;
+    }
+    return true;
+}
+
+function cp2_pseudo_legal($grid, $fromR, $fromC, $toR, $toC, $color) {
+    if (!cp2_on_board($fromR, $fromC) || !cp2_on_board($toR, $toC)) {
+        return false;
+    }
+    if ($fromR === $toR && $fromC === $toC) {
+        return false;
+    }
+    $piece = $grid[$fromR][$fromC];
+    if ($piece === '' || cp2_piece_color($piece) !== $color) {
+        return false;
+    }
+    $target = $grid[$toR][$toC];
+    if ($target !== '' && cp2_piece_color($target) === $color) {
+        return false;
+    }
+    if ($target !== '' && strtolower($target) === 'k') {
+        return false;
+    }
+
+    $deltaR = $toR - $fromR;
+    $deltaC = $toC - $fromC;
+    $absR = abs($deltaR);
+    $absC = abs($deltaC);
+    $kind = strtolower($piece);
+
+    if ($kind === 'n') {
+        return ($absR === 2 && $absC === 1) || ($absR === 1 && $absC === 2);
+    }
+    if ($kind === 'k') {
+        return $absR <= 1 && $absC <= 1;
+    }
+    if ($kind === 'p') {
+        $dir = $color === 'w' ? -1 : 1;
+        $startRow = $color === 'w' ? 6 : 1;
+        if ($deltaC === 0 && $target === '') {
+            if ($deltaR === $dir) {
+                return true;
+            }
+            $mid = $fromR + $dir;
+            return $fromR === $startRow && $deltaR === (2 * $dir) && $grid[$mid][$fromC] === '';
+        }
+        return $absC === 1 && $deltaR === $dir && $target !== '';
+    }
+
+    $orthogonal = ($deltaR === 0 || $deltaC === 0);
+    $diagonal = ($absR === $absC);
+    if ($kind === 'r') {
+        return $orthogonal && cp2_path_clear($grid, $fromR, $fromC, $toR, $toC);
+    }
+    if ($kind === 'b') {
+        return $diagonal && cp2_path_clear($grid, $fromR, $fromC, $toR, $toC);
+    }
+    if ($kind === 'q') {
+        return ($orthogonal || $diagonal) && cp2_path_clear($grid, $fromR, $fromC, $toR, $toC);
+    }
+    return false;
+}
+
+function cp2_attacks($grid, $row, $col, $byColor) {
+    $pawn = $byColor === 'w' ? 'P' : 'p';
+    $pawnRow = $byColor === 'w' ? $row + 1 : $row - 1;
+    if (cp2_on_board($pawnRow, $col - 1) && $grid[$pawnRow][$col - 1] === $pawn) {
+        return true;
+    }
+    if (cp2_on_board($pawnRow, $col + 1) && $grid[$pawnRow][$col + 1] === $pawn) {
+        return true;
+    }
+
+    $knight = $byColor === 'w' ? 'N' : 'n';
+    $knightJumps = array(array(-2, -1), array(-2, 1), array(-1, -2), array(-1, 2), array(1, -2), array(1, 2), array(2, -1), array(2, 1));
+    foreach ($knightJumps as $jump) {
+        $nr = $row + $jump[0];
+        $nc = $col + $jump[1];
+        if (cp2_on_board($nr, $nc) && $grid[$nr][$nc] === $knight) {
+            return true;
+        }
+    }
+
+    $king = $byColor === 'w' ? 'K' : 'k';
+    for ($dr = -1; $dr <= 1; $dr++) {
+        for ($dc = -1; $dc <= 1; $dc++) {
+            if ($dr === 0 && $dc === 0) {
+                continue;
+            }
+            $nr = $row + $dr;
+            $nc = $col + $dc;
+            if (cp2_on_board($nr, $nc) && $grid[$nr][$nc] === $king) {
+                return true;
+            }
+        }
+    }
+
+    $rook = $byColor === 'w' ? 'R' : 'r';
+    $bishop = $byColor === 'w' ? 'B' : 'b';
+    $queen = $byColor === 'w' ? 'Q' : 'q';
+    $rays = array(
+        array(-1, 0, 'r'), array(1, 0, 'r'), array(0, -1, 'r'), array(0, 1, 'r'),
+        array(-1, -1, 'b'), array(-1, 1, 'b'), array(1, -1, 'b'), array(1, 1, 'b'),
+    );
+    foreach ($rays as $ray) {
+        for ($dist = 1; $dist < 8; $dist++) {
+            $nr = $row + ($ray[0] * $dist);
+            $nc = $col + ($ray[1] * $dist);
+            if (!cp2_on_board($nr, $nc)) {
+                break;
+            }
+            $occupant = $grid[$nr][$nc];
+            if ($occupant === '') {
+                continue;
+            }
+            if ($ray[2] === 'r' && ($occupant === $rook || $occupant === $queen)) {
+                return true;
+            }
+            if ($ray[2] === 'b' && ($occupant === $bishop || $occupant === $queen)) {
+                return true;
+            }
+            break;
+        }
+    }
+    return false;
+}
+
+function cp2_king_rc($grid, $color) {
+    $wanted = $color === 'w' ? 'K' : 'k';
+    for ($row = 0; $row < 8; $row++) {
+        for ($col = 0; $col < 8; $col++) {
+            if ($grid[$row][$col] === $wanted) {
+                return array($row, $col);
+            }
+        }
+    }
+    return null;
+}
+
+function cp2_in_check($grid, $color) {
+    $king = cp2_king_rc($grid, $color);
+    if ($king === null) {
+        return false;
+    }
+    $attacker = $color === 'w' ? 'b' : 'w';
+    return cp2_attacks($grid, $king[0], $king[1], $attacker);
+}
+
+function cp2_has_legal_move($grid, $color) {
+    for ($row = 0; $row < 8; $row++) {
+        for ($col = 0; $col < 8; $col++) {
+            $piece = $grid[$row][$col];
+            if ($piece === '' || cp2_piece_color($piece) !== $color) {
+                continue;
+            }
+            for ($toR = 0; $toR < 8; $toR++) {
+                for ($toC = 0; $toC < 8; $toC++) {
+                    if (!cp2_pseudo_legal($grid, $row, $col, $toR, $toC, $color)) {
+                        continue;
+                    }
+                    $next = cp2_apply_move($grid, $row, $col, $toR, $toC);
+                    if (!cp2_in_check($next, $color)) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+function cp2_position_status($grid, $color) {
+    $inCheck = cp2_in_check($grid, $color);
+    if (!cp2_has_legal_move($grid, $color)) {
+        return $inCheck ? 'checkmate' : 'stalemate';
+    }
+    return $inCheck ? 'check' : 'ok';
+}
+
 function cp2_public_state($game, $token = null) {
     $you = null;
     if ($token !== null && $token !== '') {
@@ -144,6 +368,7 @@ function cp2_public_state($game, $token = null) {
         ),
         'lastMove' => $game['lastMove'],
         'winner' => $game['winner'],
+        'result' => isset($game['result']) ? $game['result'] : null,
         'you' => $you,
         'updatedAt' => $game['updatedAt'],
     );
@@ -170,6 +395,7 @@ function cp2_handle_api($action) {
                     'status' => 'waiting',
                     'lastMove' => null,
                     'winner' => null,
+                    'result' => null,
                     'createdAt' => time(),
                     'updatedAt' => time(),
                 );
@@ -291,22 +517,29 @@ function cp2_handle_api($action) {
             $fail('You cannot capture your own piece.', 400);
         }
 
-        $captured = $target;
-        $grid[$fromRc[0]][$fromRc[1]] = '';
-        if ($piece === 'P' && $toRc[0] === 0) {
-            $piece = 'Q';
-        } elseif ($piece === 'p' && $toRc[0] === 7) {
-            $piece = 'q';
+        if (!cp2_pseudo_legal($grid, $fromRc[0], $fromRc[1], $toRc[0], $toRc[1], $turn)) {
+            $fail('That piece cannot move there.', 400);
         }
-        $grid[$toRc[0]][$toRc[1]] = $piece;
+        $next = cp2_apply_move($grid, $fromRc[0], $fromRc[1], $toRc[0], $toRc[1]);
+        if (cp2_in_check($next, $turn)) {
+            $fail('That move leaves your king in check.', 400);
+        }
 
-        $game['placement'] = cp2_grid_to_fen($grid);
+        $opponent = $turn === 'w' ? 'b' : 'w';
+        $outcome = cp2_position_status($next, $opponent);
+        $game['placement'] = cp2_grid_to_fen($next);
         $game['lastMove'] = array('from' => $from, 'to' => $to);
-        if (strtolower($captured) === 'k') {
+        $game['turn'] = $opponent;
+        if ($outcome === 'checkmate') {
             $game['status'] = 'over';
             $game['winner'] = $turn;
+            $game['result'] = 'checkmate';
+        } elseif ($outcome === 'stalemate') {
+            $game['status'] = 'over';
+            $game['winner'] = 'draw';
+            $game['result'] = 'stalemate';
         } else {
-            $game['turn'] = ($turn === 'w') ? 'b' : 'w';
+            $game['result'] = $outcome === 'check' ? 'check' : null;
         }
         $game = $save($game);
         cp2_out(cp2_public_state($game, $token));
@@ -316,11 +549,19 @@ function cp2_handle_api($action) {
     fclose($fp);
     cp2_out(array('ok' => false, 'error' => 'Unknown action.'), 400);
 }
+
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+$cp2_mtime = filemtime(__FILE__);
+header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $cp2_mtime) . ' GMT');
+header('ETag: "chess-' . $cp2_mtime . '"');
 ?>
 <!doctype html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
+    <meta http-equiv="Cache-Control" content="no-store">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#4f46e5">
     <meta name="mobile-web-app-capable" content="yes">
@@ -349,7 +590,7 @@ function cp2_handle_api($action) {
     --shadow: 0 10px 28px rgba(31, 41, 55, 0.1);
     --radius: 18px;
     --header-h: 56px;
-    --tab-h: 64px;
+    --tab-h: 72px;
     --space: 16px;
     --tap: 48px;
     --safe-top: env(safe-area-inset-top, 0px);
@@ -744,12 +985,88 @@ button {
 
 .play-card {
     display: grid;
-    gap: 4px;
+    gap: 0;
+    width: min(100%, 34rem);
+    margin-inline: auto;
+    padding: 0;
+    overflow: hidden;
 }
 
 .play-view {
     display: grid;
-    gap: 14px;
+    gap: 16px;
+    min-width: 0;
+    max-width: 100%;
+    padding: 28px 24px 32px;
+}
+
+.play-view > * {
+    min-width: 0;
+    max-width: 100%;
+}
+
+.play-view h2,
+.play-view .quiz-copy {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.play-view h2 {
+    font-size: clamp(1.2rem, 4.4vw, 1.5rem);
+    line-height: 1.25;
+}
+
+.play-card .quiz-copy {
+    line-height: 1.55;
+    font-size: clamp(0.92rem, 3.4vw, 1rem);
+}
+
+.game-alert {
+    margin: 0;
+    padding: clamp(12px, 3vw, 16px);
+    border: 2px solid transparent;
+    border-radius: 14px;
+    font-size: clamp(0.95rem, 3.5vw, 1.05rem);
+    font-weight: 700;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.game-alert[hidden] {
+    display: none;
+}
+
+.game-alert strong {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 1.05em;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.game-alert.is-check,
+.game-alert.is-lose {
+    background: #fee2e2;
+    border-color: #dc2626;
+    color: #991b1b;
+}
+
+.game-alert.is-win {
+    background: #dcfce7;
+    border-color: #15803d;
+    color: #166534;
+}
+
+.game-alert.is-draw {
+    background: #fef3c7;
+    border-color: #d97706;
+    color: #92400e;
+}
+
+.advisor-square.is-in-check {
+    box-shadow: inset 0 0 0 999px rgba(220, 38, 38, 0.42);
+    outline: 3px solid #dc2626;
+    outline-offset: -3px;
 }
 
 .play-view[hidden] {
@@ -862,6 +1179,21 @@ button {
 .play-turn.is-your-turn {
     background: rgba(21, 128, 61, 0.16);
     color: var(--success);
+}
+
+.play-turn.is-check {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.play-turn.is-mate {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.play-turn.is-draw {
+    background: #fef3c7;
+    color: #92400e;
 }
 
 .play-turn.is-over {
@@ -1111,9 +1443,11 @@ button {
     bottom: 0;
     left: 0;
     z-index: 40;
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    display: flex;
+    flex-flow: row nowrap;
+    align-items: stretch;
     gap: 4px;
+    min-height: var(--tab-h);
     padding: 6px max(8px, var(--safe-right)) calc(6px + var(--safe-bottom)) max(8px, var(--safe-left));
     border-top: 1px solid var(--border);
     background: rgba(255, 255, 255, 0.96);
@@ -1122,7 +1456,9 @@ button {
 
 .tab-button {
     display: flex;
+    flex: 1 1 0;
     min-height: 52px;
+    min-width: 0;
     flex-direction: column;
     align-items: center;
     justify-content: center;
@@ -1132,8 +1468,11 @@ button {
     background: transparent;
     color: var(--muted);
     cursor: pointer;
-    font-size: 0.72rem;
+    font-size: 0.68rem;
     font-weight: 800;
+    line-height: 1.1;
+    padding: 4px 2px;
+    white-space: nowrap;
 }
 
 .tab-button svg {
@@ -1184,6 +1523,10 @@ button {
 
     .app-main {
         padding: 24px max(32px, var(--safe-right)) 48px max(32px, var(--safe-left));
+    }
+
+    .play-view {
+        padding: 40px 48px !important;
     }
 
     .tab-bar {
@@ -1270,7 +1613,7 @@ button {
         </div>
     </header>
 
-    <nav class="tab-bar" role="tablist" aria-label="App sections">
+    <nav class="tab-bar" role="tablist" aria-label="App sections" style="display:flex;flex-flow:row nowrap">
         <button class="tab-button is-active" type="button" role="tab" id="tab-learn" data-tab="learn" aria-controls="panel-learn" aria-selected="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                 <rect x="3" y="3" width="18" height="18" rx="2"></rect>
@@ -1370,6 +1713,7 @@ button {
                 <div class="card advisor-panel advisor-board-card">
                     <h2>Your board</h2>
                     <p class="quiz-copy">Drag a piece to a new square, or tap a piece and then tap where it should go. Press and hold the board to see every move you can make.</p>
+                    <p class="game-alert" data-advisor-alert hidden role="status" aria-live="polite"></p>
                     <div class="advisor-board" data-advisor-board aria-label="Chess position board"></div>
                     <div class="advisor-controls">
                         <label for="my-color-input">
@@ -1426,7 +1770,7 @@ button {
             <p class="lead">Play a live game against someone on their own device. Create a game, share the code or link, and your opponent opens the same site to join and challenge you.</p>
 
             <div class="card play-card">
-                <div class="play-view" data-play-lobby>
+                <div class="play-view" data-play-lobby style="padding:28px 24px 32px">
                     <h2>Start a game</h2>
                     <p class="quiz-copy">Create a new game and send the code to your opponent, or enter a code they shared with you.</p>
                     <div class="play-actions">
@@ -1442,7 +1786,7 @@ button {
                     <p class="feedback" data-play-message></p>
                 </div>
 
-                <div class="play-view" data-play-waiting hidden>
+                <div class="play-view" data-play-waiting hidden style="padding:28px 24px 32px">
                     <h2>Waiting for your opponent</h2>
                     <p class="quiz-copy">Share this with your opponent. When they open it and join, the game starts automatically.</p>
                     <div class="play-code-box">
@@ -1459,11 +1803,12 @@ button {
                     <p class="feedback" data-play-wait-message>Waiting for your opponent to join…</p>
                 </div>
 
-                <div class="play-view" data-play-game hidden>
+                <div class="play-view" data-play-game hidden style="padding:28px 24px 32px">
                     <div class="play-statusbar">
                         <span class="play-badge" data-play-you>You: -</span>
                         <span class="play-turn" data-play-turn>-</span>
                     </div>
+                    <p class="game-alert" data-play-alert hidden role="status" aria-live="polite"></p>
                     <div class="advisor-board play-board" data-play-board aria-label="Live game board"></div>
                     <p class="feedback" data-play-game-message></p>
                     <div class="play-actions play-actions-row">
@@ -1686,6 +2031,7 @@ button {
     const resetPositionButton = document.querySelector('[data-reset-position]');
     const advisorBoard = document.querySelector('[data-advisor-board]');
     const advisorFeedback = document.querySelector('[data-advisor-feedback]');
+    const advisorAlert = document.querySelector('[data-advisor-alert]');
     const moveResult = document.querySelector('[data-move-result]');
     const moveExplanation = document.querySelector('[data-move-explanation]');
 
@@ -2142,6 +2488,167 @@ button {
         return color === 'w' ? 'White' : 'Black';
     }
 
+    function findKingSquare(board, side) {
+        const squares = Object.keys(board);
+        for (let index = 0; index < squares.length; index += 1) {
+            const piece = board[squares[index]];
+            if (piece && pieceKind(piece) === 'k' && pieceColor(piece) === side) {
+                return squares[index];
+            }
+        }
+        return null;
+    }
+
+    function pieceAttacksSquare(board, from, target) {
+        const piece = board[from];
+        if (!piece || from === target) {
+            return false;
+        }
+
+        const kind = pieceKind(piece);
+        const side = pieceColor(piece);
+        const origin = squareToCoords(from);
+        const dest = squareToCoords(target);
+        const fileDelta = dest.file - origin.file;
+        const rankDelta = dest.rank - origin.rank;
+        const absFile = Math.abs(fileDelta);
+        const absRank = Math.abs(rankDelta);
+
+        if (kind === 'p') {
+            const forward = side === 'w' ? 1 : -1;
+            return rankDelta === forward && absFile === 1;
+        }
+        if (kind === 'n') {
+            return (absFile === 1 && absRank === 2) || (absFile === 2 && absRank === 1);
+        }
+        if (kind === 'k') {
+            return absFile <= 1 && absRank <= 1;
+        }
+
+        const diagonal = absFile === absRank && absFile > 0;
+        const straight = (fileDelta === 0 || rankDelta === 0) && (absFile + absRank) > 0;
+        if (kind === 'b' && !diagonal) {
+            return false;
+        }
+        if (kind === 'r' && !straight) {
+            return false;
+        }
+        if (kind === 'q' && !diagonal && !straight) {
+            return false;
+        }
+        if (kind !== 'b' && kind !== 'r' && kind !== 'q') {
+            return false;
+        }
+
+        const stepFile = Math.sign(fileDelta);
+        const stepRank = Math.sign(rankDelta);
+        let file = origin.file + stepFile;
+        let rank = origin.rank + stepRank;
+        while (file !== dest.file || rank !== dest.rank) {
+            const between = coordsToSquare(file, rank);
+            if (!between || board[between]) {
+                return false;
+            }
+            file += stepFile;
+            rank += stepRank;
+        }
+        return true;
+    }
+
+    function isSquareAttacked(board, square, bySide) {
+        return Object.keys(board).some((from) => {
+            const piece = board[from];
+            return Boolean(piece) && pieceColor(piece) === bySide && pieceAttacksSquare(board, from, square);
+        });
+    }
+
+    function isSideInCheck(board, side) {
+        const king = findKingSquare(board, side);
+        if (!king) {
+            return false;
+        }
+        return isSquareAttacked(board, king, otherColor(side));
+    }
+
+    function kingSafetyStatus(board, side) {
+        if (!findKingSquare(board, side)) {
+            return 'checkmate';
+        }
+        const inCheck = isSideInCheck(board, side);
+        const hasMove = generateAdvisorMoves({ board }, side).length > 0;
+        if (!hasMove) {
+            return inCheck ? 'checkmate' : 'stalemate';
+        }
+        return inCheck ? 'check' : 'ok';
+    }
+
+    function advisorKingReport(board) {
+        const stated = currentSideToMove();
+        const statedStatus = kingSafetyStatus(board, stated);
+        if (statedStatus !== 'ok') {
+            return { side: stated, status: statedStatus, turnMismatch: false };
+        }
+        const other = otherColor(stated);
+        const otherStatus = kingSafetyStatus(board, other);
+        if (otherStatus === 'check' || otherStatus === 'checkmate') {
+            return { side: other, status: otherStatus, turnMismatch: true };
+        }
+        return { side: stated, status: 'ok', turnMismatch: false };
+    }
+
+    function describeKingStatus(report, viewer) {
+        if (!report || report.status === 'ok') {
+            return null;
+        }
+        const name = report.side === 'w' ? 'White' : 'Black';
+        const yours = Boolean(viewer) && report.side === viewer;
+        const who = yours ? `${name} (you)` : `${name} (opponent)`;
+        if (report.status === 'check') {
+            const extra = report.turnMismatch
+                ? ' Set “Whose turn is it?” to that player — they have to answer the check.'
+                : '';
+            return {
+                tone: 'check',
+                title: 'Check',
+                detail: `${who} is under attack. The king must get out of check: move the king away, block the attack, or capture the attacker.${extra}`,
+            };
+        }
+        if (report.status === 'checkmate') {
+            return {
+                tone: yours ? 'lose' : 'win',
+                title: 'Checkmate',
+                detail: yours
+                    ? `${who} is under attack and has no way out. You lose.`
+                    : `${who} is under attack and has no way out. You win.`,
+            };
+        }
+        return {
+            tone: 'draw',
+            title: 'Stalemate',
+            detail: `${who} is to move and is not in check, but has no legal move. It's a draw — nobody wins.`,
+        };
+    }
+
+    function showKingAlert(element, report, viewer) {
+        if (!element) {
+            return;
+        }
+        const copy = describeKingStatus(report, viewer);
+        if (!copy) {
+            element.hidden = true;
+            element.className = 'game-alert';
+            element.textContent = '';
+            return;
+        }
+        element.hidden = false;
+        element.className = `game-alert is-${copy.tone}`;
+        element.replaceChildren();
+        const title = document.createElement('strong');
+        title.textContent = copy.title;
+        element.appendChild(title);
+        element.appendChild(document.createTextNode(` ${copy.detail}`));
+    }
+
     const ADVISOR_KING_VALUE = 20000;
     const ADVISOR_SEARCH_DEPTH = 3;
 
@@ -2201,16 +2708,19 @@ button {
     }
 
     function advisorNegamax(board, side, depth, alpha, beta) {
-        if (!advisorKingPresent(board, side) || !advisorKingPresent(board, otherColor(side))) {
-            return advisorEvaluate(board, side);
+        if (!findKingSquare(board, side)) {
+            return -30000 - depth;
         }
-
-        if (depth === 0) {
-            return advisorEvaluate(board, side);
+        if (!findKingSquare(board, otherColor(side))) {
+            return 30000 + depth;
         }
 
         const moves = orderAdvisorMoves(generateAdvisorMoves({ board }, side));
         if (!moves.length) {
+            return isSideInCheck(board, side) ? -30000 - depth : 0;
+        }
+
+        if (depth === 0) {
             return advisorEvaluate(board, side);
         }
 
@@ -2268,6 +2778,11 @@ button {
     }
 
     function renderAdvisorBoard(position, move) {
+        const report = advisorKingReport(position.board);
+        const checkedKing = (report.status === 'check' || report.status === 'checkmate')
+            ? findKingSquare(position.board, report.side)
+            : null;
+        showKingAlert(advisorAlert, report, myColor());
         advisorBoard.innerHTML = '';
         ranks.forEach((rank) => {
             files.forEach((file, fileIndex) => {
@@ -2279,7 +2794,7 @@ button {
                 square.className = `advisor-square ${color}`;
                 square.dataset.square = squareName;
                 square.draggable = false;
-                square.setAttribute('aria-label', squareName);
+                square.setAttribute('aria-label', checkedKing === squareName ? `${squareName}, king in check` : squareName);
 
                 if (piece) {
                     const pieceElement = document.createElement('span');
@@ -2289,6 +2804,10 @@ button {
                     square.appendChild(pieceElement);
                     square.dataset.piece = piece;
                     square.classList.add(pieceColor(piece) === 'w' ? 'is-white' : 'is-black');
+                }
+
+                if (checkedKing === squareName) {
+                    square.classList.add('is-in-check');
                 }
 
                 if (advisorSelectedSquare === squareName) {
@@ -2427,6 +2946,7 @@ button {
         const best = bestMoveForSide(side);
         highlightedAdvisorMove = best;
         renderAdvisorBoard(advisorPosition, best);
+        const report = advisorKingReport(advisorPosition.board);
 
         if (best) {
             moveResult.textContent = `Recommended: ${advisorPieceLabels[pieceKind(best.piece)]} ${best.from} to ${best.to}`;
@@ -2435,6 +2955,12 @@ button {
             advisorFeedback.textContent = advisorSelectedSquare
                 ? 'Blue dots are moves for the selected piece. Gold is my recommended move.'
                 : 'Gold shows my recommended move. Tap one of your pieces to see its moves.';
+        } else if (report.status === 'checkmate' || report.status === 'stalemate') {
+            const copy = describeKingStatus(advisorKingReport(advisorPosition.board), myColor());
+            moveResult.textContent = copy ? `${copy.title}.` : 'The game is over.';
+            moveExplanation.textContent = copy ? copy.detail : '';
+            advisorFeedback.className = 'feedback';
+            advisorFeedback.textContent = '';
         } else {
             moveResult.textContent = 'No recommended move found for you.';
             moveExplanation.textContent = 'Check that your pieces are placed correctly for your colour.';
@@ -2474,8 +3000,15 @@ button {
                 moveExplanation.textContent = explainAdvisorMove(highlightedAdvisorMove);
             }
         } else {
+            const report = advisorKingReport(advisorPosition.board);
             advisorFeedback.className = 'feedback';
-            advisorFeedback.textContent = 'You have no moves to make with your pieces.';
+            if (report.status === 'checkmate') {
+                advisorFeedback.textContent = 'No legal move — that is checkmate.';
+            } else if (report.status === 'stalemate') {
+                advisorFeedback.textContent = 'No legal move, and the king is not in check — that is stalemate.';
+            } else {
+                advisorFeedback.textContent = 'You have no moves to make with your pieces.';
+            }
         }
     }
 
@@ -2518,7 +3051,18 @@ button {
 
         clearAdvice();
         renderAdvisorBoard(advisorPosition, null);
-        moveResult.textContent = 'Your competitor is to move.';
+        const report = advisorKingReport(advisorPosition.board);
+        if (report.status === 'checkmate' || report.status === 'stalemate') {
+            const copy = describeKingStatus(report, myColor());
+            moveResult.textContent = copy ? `${copy.title}.` : '';
+            moveExplanation.textContent = copy ? copy.detail : '';
+            advisorFeedback.className = 'feedback';
+            advisorFeedback.textContent = '';
+            return;
+        }
+        moveResult.textContent = report.status === 'check'
+            ? 'Check. Your competitor has to get the king out of check.'
+            : 'Your competitor is to move.';
         moveExplanation.textContent = 'When your competitor moves on the real board, make the same move here. Then set the turn to Me for advice.';
         advisorFeedback.className = 'feedback';
         advisorFeedback.textContent = '';
@@ -2536,10 +3080,11 @@ button {
             advisorSelectedSquare = null;
             clearAdvice();
             renderAdvisorBoard(advisorPosition, null);
-            moveResult.textContent = 'The computer has no move to make.';
-            moveExplanation.textContent = 'Check that the computer still has pieces to play.';
+            const copy = describeKingStatus(advisorKingReport(advisorPosition.board), myColor());
+            moveResult.textContent = copy ? `${copy.title}.` : 'The computer has no move to make.';
+            moveExplanation.textContent = copy ? copy.detail : 'Check that the computer still has pieces to play.';
             advisorFeedback.className = 'feedback danger';
-            advisorFeedback.textContent = 'No computer move available.';
+            advisorFeedback.textContent = copy ? copy.detail : 'No computer move available.';
             return;
         }
 
@@ -2590,22 +3135,36 @@ button {
             return;
         }
 
+        const side = pieceColor(piece);
+        const wasMyTurn = isMyTurn();
+        const moverIsToMove = side === currentSideToMove();
+        const pseudo = pseudoMovesForPiece(advisorPosition, from, side).find((move) => move.to === to);
+        if (!pseudo || (pseudo.captured && pieceKind(pseudo.captured) === 'k')) {
+            advisorFeedback.className = 'feedback danger';
+            advisorFeedback.textContent = 'That piece cannot move there.';
+            return;
+        }
+        if (isSideInCheck(applyMoveToBoard(advisorPosition.board, pseudo), side)) {
+            advisorFeedback.className = 'feedback danger';
+            advisorFeedback.textContent = 'That move leaves the king in check. Pick a different square.';
+            return;
+        }
+
         snapshotAdvisor();
         delete advisorPosition.board[from];
-        advisorPosition.board[to] = piece;
+        advisorPosition.board[to] = pseudo.piece;
         advisorSelectedSquare = null;
         clearAdvice();
-        syncFenFromPosition();
-        renderAdvisorBoard(advisorPosition, null);
-        advisorFeedback.className = 'feedback';
-        advisorFeedback.textContent = `Moved ${from} to ${to}. Set the turn to match whose move is next.`;
-
-        if (isMyTurn()) {
-            moveResult.textContent = 'Your move is recorded. Set the turn to Computer to let the app reply, or Competitor to enter your opponent\u2019s move.';
-            moveExplanation.textContent = 'Keep the board matching your game.';
-        } else {
-            moveResult.textContent = 'Opponent move recorded. Set the turn to Me for advice.';
-            moveExplanation.textContent = 'Keep the board matching your game.';
+        if (moverIsToMove && sideInput.value !== 'computer') {
+            sideInput.value = wasMyTurn ? 'competitor' : 'me';
+        }
+        refreshAdvisorTurn();
+        const report = advisorKingReport(advisorPosition.board);
+        if (report.status === 'ok') {
+            advisorFeedback.className = 'feedback';
+            advisorFeedback.textContent = wasMyTurn
+                ? `Moved ${from} to ${to}. It is their turn now.`
+                : `Moved ${from} to ${to}. It is your turn now.`;
         }
     }
 
@@ -2786,8 +3345,11 @@ button {
     }
 
     function createAdvisorMove(position, from, to, side) {
-        const piece = position.board[from];
+        let piece = position.board[from];
         const captured = position.board[to] || null;
+        if (piece && pieceKind(piece) === 'p' && (to[1] === '8' || to[1] === '1')) {
+            piece = side === 'w' ? 'Q' : 'q';
+        }
         return {
             from,
             to,
@@ -2798,7 +3360,7 @@ button {
         };
     }
 
-    function advisorMovesForPiece(position, from, side) {
+    function pseudoMovesForPiece(position, from, side) {
         const piece = position.board[from];
         const kind = pieceKind(piece);
         const origin = squareToCoords(from);
@@ -2859,6 +3421,15 @@ button {
         return moves;
     }
 
+    function advisorMovesForPiece(position, from, side) {
+        return pseudoMovesForPiece(position, from, side).filter((move) => {
+            if (move.captured && pieceKind(move.captured) === 'k') {
+                return false;
+            }
+            return !isSideInCheck(applyMoveToBoard(position.board, move), side);
+        });
+    }
+
     function generateAdvisorMoves(position, side) {
         return Object.keys(position.board).flatMap((square) => {
             const piece = position.board[square];
@@ -2902,7 +3473,23 @@ button {
 
     function explainAdvisorMove(move) {
         const reasons = [];
-        const pieceName = advisorPieceLabels[pieceKind(move.piece)];
+        const landed = pieceKind(move.piece);
+        const started = advisorPosition && advisorPosition.board[move.from]
+            ? pieceKind(advisorPosition.board[move.from])
+            : landed;
+        const pieceName = started === 'p' && landed === 'q'
+            ? 'pawn, promoting to a queen,'
+            : advisorPieceLabels[landed];
+
+        if (advisorPosition) {
+            const after = applyMoveToBoard(advisorPosition.board, move);
+            const status = kingSafetyStatus(after, otherColor(pieceColor(move.piece)));
+            if (status === 'checkmate') {
+                reasons.push('it is checkmate — their king has no way out');
+            } else if (status === 'check') {
+                reasons.push('it puts their king in check');
+            }
+        }
 
         if (move.captured) {
             reasons.push(`it wins the opponent's ${advisorPieceLabels[pieceKind(move.captured)]}`);
@@ -2934,6 +3521,10 @@ button {
             refreshAdvisorTurn();
 
             if (!highlightedAdvisorMove) {
+                const report = advisorKingReport(advisorPosition.board);
+                if (report.status === 'check' || report.status === 'checkmate' || report.status === 'stalemate') {
+                    return;
+                }
                 advisorFeedback.className = 'feedback danger';
                 advisorFeedback.textContent = 'No move suggestion available for your pieces.';
                 return;
@@ -3110,6 +3701,7 @@ button {
     const playYouBadge = document.querySelector('[data-play-you]');
     const playTurnBadge = document.querySelector('[data-play-turn]');
     const playGameMessage = document.querySelector('[data-play-game-message]');
+    const playAlert = document.querySelector('[data-play-alert]');
     const playLeaveBtn = document.querySelector('[data-play-leave]');
 
     const PLAY_STORE_KEY = 'chessPlayGame';
@@ -3185,13 +3777,41 @@ button {
         return color === 'w' ? 'White' : color === 'b' ? 'Black' : '-';
     }
 
+    function playKingReport() {
+        const board = parseFen(playState.placement).board;
+        if (playState.status === 'over' && playState.result === 'stalemate') {
+            return { board, side: playState.turn, status: 'stalemate', turnMismatch: false };
+        }
+        if (playState.status === 'over' && playState.result === 'checkmate') {
+            return { board, side: playState.turn, status: 'checkmate', turnMismatch: false };
+        }
+        if (playState.status === 'over' && playState.winner && playState.winner !== 'draw') {
+            return {
+                board,
+                side: playState.winner === 'w' ? 'b' : 'w',
+                status: 'checkmate',
+                turnMismatch: false,
+            };
+        }
+        return {
+            board,
+            side: playState.turn,
+            status: kingSafetyStatus(board, playState.turn),
+            turnMismatch: false,
+        };
+    }
+
     function playRenderBoard() {
         playBoard.innerHTML = '';
         if (!playState) {
             return;
         }
 
-        const board = parseFen(playState.placement).board;
+        const report = playKingReport();
+        const board = report.board;
+        const checkedKing = (report.status === 'check' || report.status === 'checkmate')
+            ? findKingSquare(board, report.side)
+            : null;
         const flip = playColor === 'b';
         const rankOrder = flip ? [1, 2, 3, 4, 5, 6, 7, 8] : [8, 7, 6, 5, 4, 3, 2, 1];
         const fileOrder = flip ? ['h', 'g', 'f', 'e', 'd', 'c', 'b', 'a'] : files;
@@ -3208,7 +3828,7 @@ button {
                 square.className = `advisor-square ${color}`;
                 square.dataset.square = squareName;
                 square.draggable = false;
-                square.setAttribute('aria-label', squareName);
+                square.setAttribute('aria-label', checkedKing === squareName ? `${squareName}, king in check` : squareName);
 
                 if (piece) {
                     const pieceElement = document.createElement('span');
@@ -3220,6 +3840,9 @@ button {
                     square.classList.add(pieceColor(piece) === 'w' ? 'is-white' : 'is-black');
                 }
 
+                if (checkedKing === squareName) {
+                    square.classList.add('is-in-check');
+                }
                 if (playSelected === squareName) {
                     square.classList.add('is-selected');
                 }
@@ -3241,21 +3864,41 @@ button {
         if (!playState) {
             return;
         }
+        const report = playKingReport();
+        showKingAlert(playAlert, report, playColor);
         playYouBadge.textContent = `You: ${playColorName(playColor)}`;
         playTurnBadge.className = 'play-turn';
 
-        if (playState.status === 'over') {
-            playTurnBadge.classList.add('is-over');
-            const won = playState.winner === playColor;
-            playTurnBadge.textContent = won ? 'You won!' : 'You lost';
+        if (report.status === 'checkmate') {
+            const won = report.side !== playColor;
+            playTurnBadge.classList.add('is-mate');
+            playTurnBadge.textContent = 'Checkmate';
             playGameMessage.className = `feedback ${won ? 'success' : 'danger'}`;
             playGameMessage.textContent = won
-                ? 'You captured your opponent\u2019s king. Tap Leave game to start a new one.'
-                : 'Your king was captured. Tap Leave game to start a new one.';
+                ? 'Checkmate. Their king has no way out. You win. Tap Leave game to start a new one.'
+                : 'Checkmate. Your king has no way out. You lose. Tap Leave game to start a new one.';
+            return;
+        }
+
+        if (report.status === 'stalemate') {
+            playTurnBadge.classList.add('is-draw');
+            playTurnBadge.textContent = 'Stalemate';
+            playGameMessage.className = 'feedback';
+            playGameMessage.textContent = 'Stalemate. It is a draw — nobody wins. Tap Leave game to start a new one.';
             return;
         }
 
         const myTurn = playState.turn === playColor;
+        if (report.status === 'check') {
+            playTurnBadge.classList.add('is-check');
+            playTurnBadge.textContent = myTurn ? 'Check — your move' : 'Check — their move';
+            playGameMessage.className = 'feedback danger';
+            playGameMessage.textContent = myTurn
+                ? 'Your king is in check. Tap a piece that gets you out of check.'
+                : 'Their king is in check. They have to get out of check on this move.';
+            return;
+        }
+
         if (myTurn) {
             playTurnBadge.classList.add('is-your-turn');
             playTurnBadge.textContent = 'Your move';
@@ -3266,9 +3909,9 @@ button {
         const lastMove = playState.lastMove;
         playGameMessage.className = 'feedback';
         if (lastMove) {
-            playGameMessage.textContent = `Last move: ${lastMove.from} to ${lastMove.to}.` + (myTurn ? ' Your turn \u2014 tap a piece.' : ' Waiting for your opponent\u2026');
+            playGameMessage.textContent = `Last move: ${lastMove.from} to ${lastMove.to}.` + (myTurn ? ' Your turn — tap a piece.' : ' Waiting for your opponent…');
         } else {
-            playGameMessage.textContent = myTurn ? 'You move first. Tap one of your pieces.' : 'Waiting for the first move\u2026';
+            playGameMessage.textContent = myTurn ? 'You move first. Tap one of your pieces.' : 'Waiting for the first move…';
         }
     }
 
@@ -3286,7 +3929,7 @@ button {
             playShowView('game');
         }
 
-        const key = [data.status, data.turn, data.placement, data.lastMove ? data.lastMove.from + data.lastMove.to : ''].join('|');
+        const key = [data.status, data.result || '', data.turn, data.placement, data.lastMove ? data.lastMove.from + data.lastMove.to : ''].join('|');
         if (key !== playRenderKey) {
             playRenderKey = key;
             playSelected = null;
@@ -3304,6 +3947,10 @@ button {
         playSelected = name;
         playLegal = advisorMovesForPiece({ board }, name, playColor).map((move) => move.to);
         playRenderBoard();
+        if (!playLegal.length && isSideInCheck(board, playColor)) {
+            playGameMessage.className = 'feedback danger';
+            playGameMessage.textContent = 'That piece cannot get the king out of check. Try another piece.';
+        }
     }
 
     function playSendMove(from, to) {
@@ -3504,6 +4151,10 @@ button {
 
         playBoard.addEventListener('click', (event) => {
             if (!playState || playState.status !== 'active') {
+                return;
+            }
+            const report = playKingReport();
+            if (report.status === 'checkmate' || report.status === 'stalemate') {
                 return;
             }
             if (playState.turn !== playColor) {
